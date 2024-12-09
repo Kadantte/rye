@@ -3,13 +3,280 @@
 This file contains tracks the changes landing in Rye.  It includes changes
 that were not yet released.
 
+<!-- released start -->
+
+## 0.43.0
+
+Released on 2024-12-09.
+
+* Fix compatible toolchain to allow Python 3.13 by @PushUpek in https://github.com/astral-sh/rye/pull/1429
+* Ignore free-threaded CPython builds by @Alexis-D in https://github.com/astral-sh/rye/pull/1437
+* Bump bundled Ruff version to v0.8.2 by @charliermarsh in https://github.com/astral-sh/rye/pull/1440
+* Add support for Python 3.9.21, 3.10.16, 3.11.11, 3.12.8, and 3.13.1 by @github-actions in https://github.com/astral-sh/rye/pull/1439
+* Upgrade bundled uv version to v0.5.7 by @github-actions in https://github.com/astral-sh/rye/pull/1424
+
+## 0.42.0
+
+Released on 2024-10-21.
+
+* Sync Python Releases by @github-actions in https://github.com/astral-sh/rye/pull/1406
+* Bump bundled Ruff version to v0.7.0 by @charliermarsh in https://github.com/astral-sh/rye/pull/1419
+* Bump bundled uv version to v0.4.25 by @github-actions in https://github.com/astral-sh/rye/pull/1405
+
+## 0.41.0
+
+Released on 2024-09-29.
+
+* Restore hash annotations in lockfile by @charliermarsh in https://github.com/astral-sh/rye/pull/1403
+* Upgrade bundled uv version to v0.4.17 by @github-actions in https://github.com/astral-sh/rye/pull/1393
+
+## 0.40.0
+
+Released on 2024-09-22.
+
+* Remove pip-tools support; use uv for all operations by @nazq in https://github.com/astral-sh/rye/pull/1226
+* Respect exclusions when generating hashes by @charliermarsh in https://github.com/astral-sh/rye/pull/1357
+* List all existing tool references on `rye toolchain remove` by @soof-golan in https://github.com/astral-sh/rye/pull/1346
+* Fix a few regex inefficiencies by @InSyncWithFoo in https://github.com/astral-sh/rye/pull/1326
+* Never modify or delete the virtualenv in `rye list` by @bluss in https://github.com/astral-sh/rye/pull/1351
+* Use `inspect_err` over `map_err` by @charliermarsh in https://github.com/astral-sh/rye/pull/1385
+* Upgrade bundled Python releases by @github-actions in https://github.com/astral-sh/rye/pull/1379
+* Upgrade bundled uv version to v0.4.15 by @github-actions in https://github.com/astral-sh/rye/pull/1388
+* Update bundled Ruff version to v0.6.7 by @charliermarsh in https://github.com/astral-sh/rye/pull/1389
+
+## 0.39.0
+
+Released on 2024-08-20.
+
+* Update Cargo dependencies by @charliermarsh in https://github.com/astral-sh/rye/pull/1310
+* Fix typo in `add.md` by @mikkelam in https://github.com/astral-sh/rye/pull/1322
+* Fix typo in FAQ by @toadjaune in https://github.com/astral-sh/rye/pull/1330
+* Update Python releases to include Python 3.12.4 by @github-actions in https://github.com/astral-sh/rye/pull/1336
+* Update bundled uv version to `v0.3.0` by @github-actions in https://github.com/astral-sh/rye/pull/1332
+
+## 0.38.0
+
+Released on 2024-08-01.
+
+* Fix `rye add` and `rye remove` to create proper `tool.rye` section for `--dev` and `--exclude` flags by @flyaroundme in https://github.com/astral-sh/rye/pull/1256
+* Fix `uninstall_cmd` on Windows by @250h in https://github.com/astral-sh/rye/pull/1153
+* Make rye run print script list to stdout by @mitsuhiko in https://github.com/astral-sh/rye/pull/1268
+* Always write `--index-url` before `--extra-index-url` by @charliermarsh in https://github.com/astral-sh/rye/pull/1278
+* Use case-insensitive comparison for detecting `rye.exe` by @charliermarsh in https://github.com/astral-sh/rye/pull/1286
+* Update Python releases to include stripped variants by @github-actions in https://github.com/astral-sh/rye/pull/1280
+* Fix documentation for readline license by @3w36zj6 in https://github.com/astral-sh/rye/pull/1297
+* Update bundled uv version to `v0.2.33` by @github-actions in https://github.com/astral-sh/rye/pull/1303
+* Update bundled pip to `v24.2.0` by @charliermarsh in https://github.com/astral-sh/rye/pull/1304
+
+## 0.37.0
+
+Released on 2024-07-20.
+
+* Fix verify-ssl option parsing by @taki-d in https://github.com/astral-sh/rye/pull/1208
+* Emit warning when asked to build a virtual project by @nazq in https://github.com/astral-sh/rye/pull/1227
+* Add short version `-d` for `rye remove --dev` by @nikhilweee in https://github.com/astral-sh/rye/pull/1239
+* Remove redundant alias information from CLI by @piotrgredowski in https://github.com/astral-sh/rye/pull/1237
+* Update bundled uv version to `v0.2.27` by @github-actions in https://github.com/astral-sh/rye/pull/1232
+* Update Python releases to include `3.12.4` by @github-actions in https://github.com/astral-sh/rye/pull/1230
+* Respect `.python-version` in Rye builds by @charliermarsh in https://github.com/astral-sh/rye/pull/1250
+* Update bundled Ruff version to `v0.5.4` by @charliermarsh in https://github.com/astral-sh/rye/pull/1251
+
+## 0.36.0
+
+Released on 2024-07-07.
+
+* Upgrade pyyaml to v6.0.1 by @charliermarsh in https://github.com/astral-sh/rye/pull/1170
+* Pass keyring-provider to uv sync and install by @emarsden-iso in https://github.com/astral-sh/rye/pull/1183
+* Add docs hint for packages on multiple indexes by @dennisrall in https://github.com/astral-sh/rye/pull/1188
+* Pass universal flag down to uv by @lbowenwest in https://github.com/astral-sh/rye/pull/1186
+* Use musl build for ARM Linux by @charliermarsh in https://github.com/astral-sh/rye/pull/1192
+* Bump uv to 0.2.22 by @charliermarsh in https://github.com/astral-sh/rye/pull/1192
+* Upgrade twine to v5.1.1 by @charliermarsh in https://github.com/astral-sh/rye/pull/1199
+
+## 0.35.0
+
+Released on 2024-06-24.
+
+* Enforce `--pre` when auto-syncing by @charliermarsh in https://github.com/astral-sh/rye/pull/1107
+* Move from `rye-up.com` to `rye.astral.sh` by @charliermarsh in https://github.com/astral-sh/rye/pull/1113
+* Fix install instructions on README.md for mac/linux by @timothycrosley in https://github.com/astral-sh/rye/pull/1114
+* Fix CLI deserialization of PowerShell (`powershell`) by @charliermarsh in https://github.com/astral-sh/rye/pull/1125
+* Add ability to specify option to generate hashes within pyproject.toml by @asmith26 in https://github.com/astral-sh/rye/pull/1129
+* Bump uv to 0.2.13 by @charliermarsh in https://github.com/astral-sh/rye/pull/1123
+* Improve `config.toml` error messages by @zys864 in https://github.com/astral-sh/rye/pull/1155
+
+## 0.34.0
+
+Released on 2024-05-20.
+
+* Add nushell completion support by @MilesCranmer in https://github.com/astral-sh/rye/pull/1030
+* Use uv in rye build when enabled by @bluss in https://github.com/astral-sh/rye/pull/978
+* Add short version add -d for rye add --dev by @bluss in https://github.com/astral-sh/rye/pull/1044
+* Flip uv to the default Rye backend by @charliermarsh in https://github.com/astral-sh/rye/pull/1053
+* Fix Rye not using user-chosen toolchain as default during installation by @pjdon in https://github.com/astral-sh/rye/pull/1054
+* Add keyring support for uv by @emarsden-iso in https://github.com/astral-sh/rye/pull/1016
+* Allow to generate lockfiles with hashes when using uv by @mvaled in https://github.com/astral-sh/rye/pull/1070
+* Bump ruff to 0.4.4 by @davfsa in https://github.com/astral-sh/rye/pull/1075
+* Fix TOML array formatting by @my1e5 in https://github.com/astral-sh/rye/pull/1084
+* Bump uv to 0.1.44 by @charliermarsh in https://github.com/astral-sh/rye/pull/1085
+* Discover cosmo-ified (`.com`) binaries on Windows by @mataha in https://github.com/astral-sh/rye/pull/1091
+* Write `use-uv = true` in no-prompt mode by @charliermarsh in https://github.com/astral-sh/rye/pull/1098
+
+## 0.33.0
+
+Released on 2024-04-24.
+
+- Ensure files created by `rye init`, such as `pyproject.toml` and initial python files end with a newline. #979
+
+- Add `--refresh` argument on `-f`.  #994
+
+- Preserve trailing newline in templates.  #979
+
+- Update uv to 0.1.37.  #980
+
+- Allow comments in `.python-version`.  #1038
+
+- Update Python releases to include 3.12.3 et al.  #1022
+
+## 0.32.0
+
+Released on 2024-03-29
+
+- Update uv to 0.1.26.  #924
+
+- Always create `.gitignore` file in `rye init`.  #919
+
+- Prevent `rye fetch --force` from removing a target directory that is not a Python installation.  #921
+
+- `rye list` always prints the currently installed packages even this project is not managed by Rye.  #940
+
+- Fix error on using -v or -q with `rye fmt` or `rye lint`. #959
+
+- Fix rye fetch detection of registered toolchain.  #931
+
+- Ignore build-system configuration for virtual projects.  #929
+
+## 0.31.0
+
+Released on 2024-03-22
+
+- Update uv to 0.1.23.  #916
+
+- Allow `rye publish` working outside of project.  #910
+
+- `rye test --quiet` no longer implies `--no-capture`. #915
+
+- Rye now can be used to fetch Python installations even when not using Rye
+  and build infos are no longer included by default.  This means that rather
+  than having interpreters at `~/.rye/py/cpython@3.11.1/install/bin/python3`
+  it will now reside at `~/.rye/py/cpython@3.11.1/bin/python3`.  #917
+
+- Installer now recommends `uv` over `pip-tools`.  #918
+
+## 0.30.0
+
+Released on 2024-03-19
+
+- Update uv to 0.1.21.  #884, #890, #904
+
+- Fix incorrect flag passing of `rye test` `-q` and `-v`.  #880
+
+- Rye now loads `.env` files.  This applies both for Rye's own
+  use of environment variables but also to scripts launched via
+  `run`.  #894
+
+- Fix `rye add m --path ./m` causing a panic on windows.  #897
+
+## 0.29.0
+
+Released on 2024-03-11
+
+- Updated to `uv` 0.1.17.  #850, #867
+
+- Trap panics and silence bad pipe errors.  #862
+
+- Updating `rye` will now also ensure that the self-venv is updated.  Previously
+  this was deferred until the next `sync`.  #863
+
+- The `self update` command now accepts `--branch`.  #864
+
+- Fixed an issue that caused pip-tools to not update.  #865
+
+- Updates `build` and `certifi`.  #866
+
+## 0.28.0
+
+Released on 2024-03-07
+
+- `--skip-existing` is now available with Rye's `publish` command. #831
+
+- Bumped `uv` to 0.1.15.  #760, #820, #837
+
+- Bumped `ruff` to 0.3.0.  #821
+
+- The `init` command now generates a script with the name of the
+  project rather than `hello`.  #801
+
+- Retain markers when adding dependencies with features when uv is used.  #807
+
+- Fixed a bug that caused repeated syncs not to recall all previous options.  #830
+
+- Report `self-python` version in `--version`.  #843
+
+- Fixes a bug where `rye config` would not create the `RYE_HOME` folder if needed.  #844
+
+- `rye add` now retains version and URL for the requirements when `uv` is used.  #846
+
+- Added a `rye test` command which invokes `pytest`.  #847
+
+## 0.27.0
+
+Released on 2024-02-26
+
+- rye now uses `uv` to bootstrap its internal packages and tools. #754
+
+- rye no longer fails if an incorrect `VIRTUAL_ENV` environment
+  variable is exported.  #766
+
+- Added latest Python builds.  #771
+
+- When `uv` is used the prompt is now set to the project name.  #773
+
+- Allow `rye fetch --force` to force re-fetch a downloaded toolchain.  #778
+
+- Fixed a panic when adding a package to a virtual project.  #783
+
+- Bumped `uv` to 0.1.11.  #790
+
+## 0.26.0
+
+Released on 2024-02-23
+
+- `init` now supports `--script` and `--lib` to generate a script or library project.  #738
+
+- Fixed `rye config --show-path` abort with an error. #706
+
+- Bumped `uv` to 0.1.9.  #719, #740, #746
+
+- Bumped `ruff` to 0.2.2.  #700
+
+- Prevent `rye toolchain remove` from removing the currently active toolchain.  #693
+
+- Sync latest PyPy releases. #683
+
+- Fixes an issue where when `uv` is enabled, `add` did not honor custom sources.  #720
+
+- When `uv` is enabled, rye will now automatically sync on `add` and `remove`.  #677
+
+- Rename `rye tools list` flags: `-i, --include-scripts` to `-s, --include-scripts` and `-v, --version-show` to `-v, --include-version`.  #722
+
 ## 0.25.0
 
-_Unreleased_
+Released on 2024-02-19
 
 - Improved the error message if `config` is invoked without arguments.  #660
 
-- Bump `uv` to 0.1.3.  #665, #675
+- Bump `uv` to 0.1.5.  #665, #675, #698
 
 - When `uv` is enabled, `rye add` now uses `uv` instead of `unearth`
   internally.  #667
@@ -18,7 +285,17 @@ _Unreleased_
 
 - `uv` can now also be enabled on windows.  #675
 
-<!-- released start -->
+- Removed the unsupported and un-used `arch` parameter from `fetch`.  #681
+
+- Fixed the `-q` parameter not working for the `init` command.  #686
+
+- `rye tools list` shows broken tools if the toolchain was removed. #692
+
+- Configure the ruff cache directory to be located within the workspace root. #689
+
+- Use default toolchain to install tools.  #666
+
+- `rye --version` now shows if `uv` is enabled.  #699
 
 ## 0.24.0
 
@@ -156,7 +433,7 @@ Released on 2024-01-15
 
 - Fixed default generated script reference.  #527
 
-- Correctly fall back to home folder if HOME is unset.  #533 
+- Correctly fall back to home folder if HOME is unset.  #533
 
 ## 0.16.0
 

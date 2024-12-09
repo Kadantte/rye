@@ -4,7 +4,10 @@ use anyhow::Error;
 use clap::Parser;
 use pep508_rs::Requirement;
 
+use crate::config::Config;
+use crate::lock::KeyringProvider;
 use crate::pyproject::{DependencyKind, PyProject};
+use crate::sync::autosync;
 use crate::utils::{format_requirement, CommandOutput};
 
 /// Removes a package from this project.
@@ -14,17 +17,36 @@ pub struct Args {
     #[arg(required = true)]
     requirements: Vec<String>,
     /// Remove this from dev dependencies.
-    #[arg(long)]
+    #[arg(short, long)]
     dev: bool,
     /// Remove this from an optional dependency group.
     #[arg(long, conflicts_with = "dev")]
     optional: Option<String>,
+    /// Runs `sync` even if auto-sync is disabled.
+    #[arg(long)]
+    sync: bool,
+    /// Does not run `sync` even if auto-sync is enabled.
+    #[arg(long, conflicts_with = "sync")]
+    no_sync: bool,
     /// Enables verbose diagnostics.
     #[arg(short, long)]
     verbose: bool,
     /// Turns off all output.
     #[arg(short, long, conflicts_with = "verbose")]
     quiet: bool,
+
+    /// Include pre-releases when automatically syncing the workspace.
+    #[arg(long)]
+    pre: bool,
+    /// Set to `true` to lock with sources in the lockfile when automatically syncing the workspace.
+    #[arg(long)]
+    with_sources: bool,
+    /// Set to `true` to lock with hashes in the lockfile when automatically syncing the workspace.
+    #[arg(long)]
+    generate_hashes: bool,
+    /// Attempt to use `keyring` for authentication for index URLs.
+    #[arg(long, value_enum, default_value_t)]
+    keyring_provider: KeyringProvider,
 }
 
 pub fn execute(cmd: Args) -> Result<(), Error> {
@@ -54,6 +76,17 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
         for requirement in removed_packages {
             echo!("Removed {}", format_requirement(&requirement));
         }
+    }
+
+    if (Config::current().autosync() && !cmd.no_sync) || cmd.sync {
+        autosync(
+            &pyproject_toml,
+            output,
+            cmd.pre,
+            cmd.with_sources,
+            cmd.generate_hashes,
+            cmd.keyring_provider,
+        )?;
     }
 
     Ok(())

@@ -11,16 +11,19 @@ use regex::Regex;
 use same_file::is_same_file;
 use url::Url;
 
-use crate::bootstrap::{ensure_self_venv, fetch};
+use crate::bootstrap::{ensure_self_venv, fetch, FetchOptions};
 use crate::config::Config;
 use crate::consts::VENV_BIN;
+use crate::lock::KeyringProvider;
 use crate::platform::get_app_dir;
-use crate::pyproject::{normalize_package_name, ExpandedSources};
-use crate::sources::PythonVersionRequest;
-use crate::sync::create_virtualenv;
+use crate::pyproject::{normalize_package_name, read_venv_marker, ExpandedSources};
+use crate::sources::py::PythonVersionRequest;
+use crate::sync::{create_virtualenv, VenvMarker};
 use crate::utils::{
     get_short_executable_name, get_venv_python_bin, is_executable, symlink_file, CommandOutput,
+    IoPathContext,
 };
+use crate::uv::{UvBuilder, UvInstallOptions};
 
 const FIND_SCRIPT_SCRIPT: &str = r#"
 import os
@@ -66,17 +69,29 @@ while to_resolve:
 print(json.dumps(result))
 "#;
 static SUCCESSFULLY_DOWNLOADED_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new("(?m)^Successfully downloaded (.*?)$").unwrap());
+    Lazy::new(|| Regex::new("(?m)^Successfully downloaded (.*)").unwrap());
 
-#[derive(Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct ToolInfo {
     pub version: String,
     pub scripts: Vec<String>,
+    pub venv_marker: Option<VenvMarker>,
+    pub valid: bool,
 }
 
 impl ToolInfo {
-    pub fn new(version: String, scripts: Vec<String>) -> Self {
-        Self { version, scripts }
+    pub fn new(
+        version: String,
+        scripts: Vec<String>,
+        venv_marker: Option<VenvMarker>,
+        valid: bool,
+    ) -> Self {
+        Self {
+            version,
+            scripts,
+            venv_marker,
+            valid,
+        }
     }
 }
 
@@ -95,6 +110,7 @@ pub fn install(
     include_deps: &[String],
     extra_requirements: &[Requirement],
     output: CommandOutput,
+    keyring_provider: KeyringProvider,
 ) -> Result<(), Error> {
     let config = Config::current();
     let sources = ExpandedSources::from_sources(&config.sources()?)?;
@@ -117,7 +133,7 @@ pub fn install(
     uninstall_helper(&target_venv_path, &shim_dir)?;
 
     // make sure we have a compatible python version
-    let py_ver = fetch(py_ver, output)?;
+    let py_ver = fetch(py_ver, FetchOptions::with_output(output))?;
 
     create_virtualenv(
         output,
@@ -127,48 +143,24 @@ pub fn install(
         requirement.name.as_str(),
     )?;
 
-    let mut cmd = if Config::current().use_uv() {
-        let mut cmd = Command::new(self_venv.join(VENV_BIN).join("uv"));
-        cmd.arg("pip")
-            .arg("install")
-            .env("VIRTUAL_ENV", &target_venv_path)
-            .env("PYTHONWARNINGS", "ignore");
-        cmd
-    } else {
-        let mut cmd = Command::new(self_venv.join(VENV_BIN).join("pip"));
-        cmd.arg("--python")
-            .arg(&py)
-            .arg("install")
-            .env("PYTHONWARNINGS", "ignore")
-            .env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
-        cmd
-    };
-
-    sources.add_as_pip_args(&mut cmd);
-    if output == CommandOutput::Verbose {
-        cmd.arg("--verbose");
-    } else {
-        if output == CommandOutput::Quiet {
-            cmd.arg("-q");
-        }
-        cmd.env("PYTHONWARNINGS", "ignore");
-    }
-    cmd.arg("--").arg(&requirement.to_string());
-
-    // we don't support versions below 3.7, but for 3.7 we need importlib-metadata
-    // to be installed
-    if py_ver.major == 3 && py_ver.minor == 7 {
-        cmd.arg("importlib-metadata==6.6.0");
-    }
-
-    for extra in extra_requirements {
-        cmd.arg(extra.to_string());
-    }
-
-    let status = cmd.status()?;
-    if !status.success() {
+    let result = UvBuilder::new()
+        .with_output(output.quieter())
+        .with_sources(sources)
+        .ensure_exists()?
+        .venv(&target_venv_path, &py, &py_ver, None)?
+        .with_output(output)
+        .install(
+            &requirement,
+            UvInstallOptions {
+                importlib_workaround: py_ver.major == 3 && py_ver.minor == 7,
+                extras: extra_requirements.to_vec(),
+                refresh: force,
+                keyring_provider,
+            },
+        );
+    if result.is_err() {
         uninstall_helper(&target_venv_path, &shim_dir)?;
-        bail!("tool installation failed");
+        return result;
     }
 
     let out = Command::new(py)
@@ -287,13 +279,12 @@ fn install_scripts(
             {
                 if symlink_file(file, &shim_target).is_err() {
                     fs::hard_link(file, &shim_target)
-                        .with_context(|| format!("unable to symlink tool to {}", file.display()))?;
+                        .path_context(file, "unable to symlink tool")?;
                 }
             }
             #[cfg(unix)]
             {
-                symlink_file(file, shim_target)
-                    .with_context(|| format!("unable to symlink tool to {}", file.display()))?;
+                symlink_file(file, shim_target).path_context(file, "unable to symlink tool")?;
             }
             rv.push(get_short_executable_name(file));
         }
@@ -328,16 +319,19 @@ pub fn list_installed_tools() -> Result<HashMap<String, ToolInfo>, Error> {
     }
 
     let mut rv = HashMap::new();
-    for folder in fs::read_dir(&tool_dir)? {
+    for folder in fs::read_dir(&tool_dir).path_context(&tool_dir, "unable to enumerate tools")? {
         let folder = folder?;
         if !folder.file_type()?.is_dir() {
             continue;
         }
         let tool_name = folder.file_name().to_string_lossy().to_string();
         let target_venv_bin_path = folder.path().join(VENV_BIN);
-        let mut scripts = Vec::new();
+        let venv_marker = read_venv_marker(&folder.path());
 
-        for script in fs::read_dir(target_venv_bin_path.clone())? {
+        let mut scripts = Vec::new();
+        for script in fs::read_dir(target_venv_bin_path.clone())
+            .path_context(&target_venv_bin_path, "unable to enumerate scripts")?
+        {
             let script = script?;
             let script_path = script.path();
             if let Some(base_name) = script_path.file_name() {
@@ -347,17 +341,23 @@ pub fn list_installed_tools() -> Result<HashMap<String, ToolInfo>, Error> {
                 }
             }
         }
-        let tool_version = Command::new(target_venv_bin_path.join("python"))
+
+        let output = Command::new(target_venv_bin_path.join("python"))
             .arg("-c")
             .arg(TOOL_VERSION_SCRIPT)
             .arg(tool_name.clone())
             .stdout(Stdio::piped())
-            .output()?;
-        let tool_version = String::from_utf8_lossy(&tool_version.stdout)
-            .trim()
-            .to_string();
+            .output();
+        let valid = output.is_ok();
+        let tool_version = match output {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            Err(_) => String::new(),
+        };
 
-        rv.insert(tool_name, ToolInfo::new(tool_version, scripts));
+        rv.insert(
+            tool_name,
+            ToolInfo::new(tool_version, scripts, venv_marker, valid),
+        );
     }
 
     Ok(rv)
@@ -369,11 +369,13 @@ fn uninstall_helper(target_venv_path: &Path, shim_dir: &Path) -> Result<(), Erro
         return Ok(());
     }
 
-    for script in fs::read_dir(target_venv_bin_path)? {
+    for script in fs::read_dir(&target_venv_bin_path)
+        .path_context(&target_venv_bin_path, "unable to enumerate scripts")?
+    {
         let script = script?;
         if let Some(base_name) = script.path().file_name() {
             let shim_path = shim_dir.join(base_name);
-            if let Ok(true) = is_same_file(&shim_path, &script.path()) {
+            if let Ok(true) = is_same_file(&shim_path, script.path()) {
                 fs::remove_file(&shim_path).ok();
             }
         }

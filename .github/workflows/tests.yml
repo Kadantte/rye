@@ -1,6 +1,10 @@
 name: Tests
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   test-latest-linux:
@@ -8,10 +12,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo insta
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-insta
       - name: Check
         run: make check
       - name: Test
@@ -22,10 +31,15 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo insta
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-insta
       - name: Check
         run: make check
       - name: Test
@@ -36,10 +50,15 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo insta
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-insta
       - name: Check
         run: make check
       - name: Test

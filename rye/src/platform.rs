@@ -7,7 +7,8 @@ use anyhow::{anyhow, Context, Error};
 
 use crate::config::Config;
 use crate::pyproject::latest_available_python_version;
-use crate::sources::{PythonVersion, PythonVersionRequest};
+use crate::sources::py::{PythonVersion, PythonVersionRequest};
+use crate::utils::IoPathContext;
 
 static APP_DIR: Mutex<Option<&'static PathBuf>> = Mutex::new(None);
 
@@ -61,7 +62,7 @@ pub fn get_canonical_py_path(version: &PythonVersion) -> Result<PathBuf, Error> 
 
 /// Returns the path of the python binary for the given version.
 pub fn get_toolchain_python_bin(version: &PythonVersion) -> Result<PathBuf, Error> {
-    let mut p = get_canonical_py_path(version)?;
+    let p = get_canonical_py_path(version)?;
 
     // It's permissible to link Python binaries directly in two ways.  It can either be
     // a symlink in which case it's used directly, it can be a non-executable text file
@@ -78,30 +79,35 @@ pub fn get_toolchain_python_bin(version: &PythonVersion) -> Result<PathBuf, Erro
                 return Ok(p);
             }
         }
-        let contents = fs::read_to_string(&p).context("could not read toolchain file")?;
+        let contents = fs::read_to_string(&p).path_context(&p, "could not read toolchain file")?;
         return Ok(PathBuf::from(contents.trim_end()));
     }
 
+    Ok(get_python_bin_within(&p))
+}
+
+/// Returns the path to the python binary within the path.
+pub fn get_python_bin_within(path: &Path) -> PathBuf {
+    let mut path = path.to_path_buf();
     // we support install/bin/python, install/python and bin/python
-    p.push("install");
-    if !p.is_dir() {
-        p.pop();
+    path.push("install");
+    if !path.is_dir() {
+        path.pop();
     }
-    p.push("bin");
-    if !p.is_dir() {
-        p.pop();
+    path.push("bin");
+    if !path.is_dir() {
+        path.pop();
     }
 
     #[cfg(unix)]
     {
-        p.push("python3");
+        path.push("python3");
     }
     #[cfg(windows)]
     {
-        p.push("python.exe");
+        path.push("python.exe");
     }
-
-    Ok(p)
+    path
 }
 
 /// Returns a pinnable version for this version request.
@@ -181,7 +187,7 @@ pub fn get_default_author_with_fallback(dir: &PathBuf) -> Option<(String, String
         .arg("config")
         .arg("--get-regexp")
         .current_dir(dir)
-        .arg("^user.(name|email)$")
+        .arg(r"^user\.(name|email)$")
         .stdout(Stdio::piped())
         .output()
     {
@@ -211,8 +217,7 @@ pub fn get_python_version_request_from_pyenv_pin(root: &Path) -> Option<PythonVe
     loop {
         here.push(".python-version");
         if let Ok(contents) = fs::read_to_string(&here) {
-            let ver = contents.trim().parse().ok()?;
-            return Some(ver);
+            return read_python_version(&contents);
         }
 
         // pop filename
@@ -225,6 +230,20 @@ pub fn get_python_version_request_from_pyenv_pin(root: &Path) -> Option<PythonVe
     }
 
     None
+}
+
+/// Return the [`PythonVersionRequest`] from a `.python-version` file.
+fn read_python_version(contents: &str) -> Option<PythonVersionRequest> {
+    // Skip empty lines and comments.
+    let ver = contents.lines().find(|line| {
+        let trimmed = line.trim();
+        !(trimmed.is_empty() || trimmed.starts_with('#'))
+    })?;
+
+    // Parse the version.
+    let ver = ver.parse().ok()?;
+
+    Some(ver)
 }
 
 /// Returns the most recent cpython release.
@@ -248,7 +267,7 @@ pub fn get_latest_cpython_version() -> Result<PythonVersion, Error> {
 /// [pypi]
 /// token = ""
 /// ```
-pub fn get_credentials() -> Result<toml_edit::Document, Error> {
+pub fn get_credentials() -> Result<toml_edit::DocumentMut, Error> {
     let filepath = get_credentials_filepath()?;
 
     // If a credentials file doesn't exist create an empty one. TODO: Move to bootstrapping?
@@ -257,17 +276,37 @@ pub fn get_credentials() -> Result<toml_edit::Document, Error> {
     }
 
     let doc = fs::read_to_string(&filepath)?
-        .parse::<toml_edit::Document>()
-        .with_context(|| format!("failed to parse credentials from {}", filepath.display()))?;
+        .parse::<toml_edit::DocumentMut>()
+        .path_context(&filepath, "failed to parse credentials")?;
 
     Ok(doc)
 }
 
-pub fn write_credentials(doc: &toml_edit::Document) -> Result<(), Error> {
-    std::fs::write(get_credentials_filepath()?, doc.to_string())
-        .context("unable to write to the credentials file")
+pub fn write_credentials(doc: &toml_edit::DocumentMut) -> Result<(), Error> {
+    let path = get_credentials_filepath()?;
+    std::fs::write(&path, doc.to_string())
+        .path_context(&path, "unable to write to the credentials file")
 }
 
 pub fn get_credentials_filepath() -> Result<PathBuf, Error> {
     Ok(get_app_dir().join("credentials"))
+}
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn test_read_python_version() {
+        // Parse a simple version.
+        let ver = super::read_python_version("3.8.1\n");
+        assert_eq!(ver, Some("3.8.1".parse().unwrap()));
+
+        // Skip empty lines.
+        let ver = super::read_python_version("\n\n3.8.1\n");
+        assert_eq!(ver, Some("3.8.1".parse().unwrap()));
+
+        // Skip comments.
+        let ver = super::read_python_version("# comment\n3.8.1\n");
+        assert_eq!(ver, Some("3.8.1".parse().unwrap()));
+    }
 }

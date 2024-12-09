@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env::{self, join_paths, split_paths};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use console::style;
 use crate::pyproject::{PyProject, Script};
 use crate::sync::{sync, SyncOptions};
 use crate::tui::redirect_to_stderr;
-use crate::utils::{exec_spawn, get_venv_python_bin, success_status};
+use crate::utils::{exec_spawn, get_venv_python_bin, success_status, IoPathContext};
 
 /// Runs a command installed into this package.
 #[derive(Parser, Debug)]
@@ -34,7 +35,7 @@ enum Cmd {
 }
 
 pub fn execute(cmd: Args) -> Result<(), Error> {
-    let _guard = redirect_to_stderr(true);
+    let guard = redirect_to_stderr(true);
     let pyproject = PyProject::load_or_discover(cmd.pyproject.as_deref())?;
 
     // make sure we have the minimal virtualenv.
@@ -42,6 +43,7 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
         .context("failed to sync ahead of run")?;
 
     if cmd.list || cmd.cmd.is_none() {
+        drop(guard);
         return list_scripts(&pyproject);
     }
     let args = match cmd.cmd {
@@ -62,9 +64,9 @@ fn invoke_script(
     let mut env_overrides = None;
 
     match pyproject.get_script_cmd(&args[0].to_string_lossy()) {
-        Some(Script::Call(entry, env_vars)) => {
+        Some(Script::Call(entry, env_vars, env_file)) => {
             let py = OsString::from(get_venv_python_bin(&pyproject.venv_path()));
-            env_overrides = Some(env_vars);
+            env_overrides = Some(load_env_vars(pyproject, env_file, env_vars)?);
             args = if let Some((module, func)) = entry.split_once(':') {
                 if module.is_empty() || func.is_empty() {
                     bail!("Python callable must be in the form <module_name>:<callable_name> or <module_name>")
@@ -86,11 +88,11 @@ fn invoke_script(
             .chain(args.into_iter().skip(1))
             .collect();
         }
-        Some(Script::Cmd(script_args, env_vars)) => {
+        Some(Script::Cmd(script_args, env_vars, env_file)) => {
             if script_args.is_empty() {
                 bail!("script has no arguments");
             }
-            env_overrides = Some(env_vars);
+            env_overrides = Some(load_env_vars(pyproject, env_file, env_vars)?);
             let script_target = venv_bin.join(&script_args[0]);
             if script_target.is_file() {
                 args = Some(script_target.as_os_str().to_owned())
@@ -155,6 +157,23 @@ fn invoke_script(
     } else {
         Ok(cmd.status()?)
     }
+}
+
+fn load_env_vars(
+    pyproject: &PyProject,
+    env_file: Option<PathBuf>,
+    mut env_vars: HashMap<String, String>,
+) -> Result<HashMap<String, String>, Error> {
+    if let Some(ref env_file) = env_file {
+        let env_file = pyproject.root_path().join(env_file);
+        for item in
+            dotenvy::from_path_iter(&env_file).path_context(&env_file, "could not load env-file")?
+        {
+            let (k, v) = item.path_context(&env_file, "invalid value in env-file")?;
+            env_vars.insert(k, v);
+        }
+    }
+    Ok(env_vars)
 }
 
 fn list_scripts(pyproject: &PyProject) -> Result<(), Error> {

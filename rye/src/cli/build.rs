@@ -2,18 +2,21 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use anyhow::{bail, Error};
+use anyhow::{anyhow, bail, Context, Error};
 use clap::Parser;
 use console::style;
 
-use crate::bootstrap::ensure_self_venv;
+use crate::bootstrap::{fetch, FetchOptions};
+
+use crate::platform::get_toolchain_python_bin;
 use crate::pyproject::{locate_projects, PyProject};
-use crate::utils::{get_venv_python_bin, CommandOutput};
+use crate::utils::{get_venv_python_bin, prepend_path_to_path_env, CommandOutput, IoPathContext};
+use crate::uv::UvBuilder;
 
 /// Builds a package for distribution.
 #[derive(Parser, Debug)]
 pub struct Args {
-    /// Build an sdist
+    /// Build a sdist
     #[arg(long)]
     sdist: bool,
     /// Build a wheel
@@ -44,8 +47,8 @@ pub struct Args {
 
 pub fn execute(cmd: Args) -> Result<(), Error> {
     let output = CommandOutput::from_quiet_and_verbose(cmd.quiet, cmd.verbose);
-    let venv = ensure_self_venv(output)?;
     let project = PyProject::load_or_discover(cmd.pyproject.as_deref())?;
+    let py_ver = project.venv_python_version()?;
 
     let out = match cmd.out {
         Some(path) => path,
@@ -53,15 +56,38 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
     };
 
     if out.exists() && cmd.clean {
-        for entry in fs::read_dir(&out)? {
+        for entry in fs::read_dir(&out).path_context(&out, "enumerate build output")? {
             let path = entry?.path();
             if path.is_file() {
-                fs::remove_file(path)?;
+                fs::remove_file(&path).path_context(&path, "clean build artifact")?;
             }
         }
     }
 
     let projects = locate_projects(project, cmd.all, &cmd.package[..])?;
+
+    let all_virtual = projects.iter().all(|p| p.is_virtual());
+    if all_virtual {
+        warn!("skipping build, all projects are virtual");
+        return Ok(());
+    }
+
+    // Make sure we have a compatible Python version.
+    let py_ver = fetch(&py_ver.into(), FetchOptions::with_output(output))
+        .context("failed fetching toolchain ahead of sync")?;
+    echo!(if output, "Python version: {}", style(&py_ver).cyan());
+    let py_bin = get_toolchain_python_bin(&py_ver)?;
+
+    // Create a virtual environment in which to perform the builds.
+    let uv = UvBuilder::new()
+        .with_output(CommandOutput::Quiet)
+        .ensure_exists()?;
+    let venv_dir = tempfile::tempdir().context("failed to create temporary directory")?;
+    let uv_venv = uv
+        .venv(venv_dir.path(), &py_bin, &py_ver, None)
+        .context("failed to create build environment")?;
+    uv_venv.write_marker()?;
+    uv_venv.bootstrap()?;
 
     for project in projects {
         // skip over virtual packages on build
@@ -69,11 +95,13 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
             continue;
         }
 
-        if output != CommandOutput::Quiet {
-            echo!("building {}", style(project.normalized_name()?).cyan());
-        }
+        echo!(
+            if output,
+            "building {}",
+            style(project.normalized_name()?).cyan()
+        );
 
-        let mut build_cmd = Command::new(get_venv_python_bin(&venv));
+        let mut build_cmd = Command::new(get_venv_python_bin(venv_dir.path()));
         build_cmd
             .arg("-mbuild")
             .env("NO_COLOR", "1")
@@ -81,11 +109,27 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
             .arg(&out)
             .arg(&*project.root_path());
 
+        // we need to ensure uv is available to use without installing it into self_venv
+        let uv = UvBuilder::new()
+            .with_output(output)
+            .ensure_exists()?
+            .with_output(output);
+        let uv_dir = uv
+            .uv_bin()
+            .parent()
+            .ok_or_else(|| anyhow!("Could not find uv binary in self venv: empty path"))?;
+        build_cmd.env("PATH", prepend_path_to_path_env(uv_dir)?);
+        build_cmd.arg("--installer=uv");
+
         if cmd.wheel {
             build_cmd.arg("--wheel");
         }
         if cmd.sdist {
             build_cmd.arg("--sdist");
+        }
+
+        if output == CommandOutput::Verbose {
+            build_cmd.arg("--verbose");
         }
 
         if output == CommandOutput::Quiet {
@@ -98,6 +142,5 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
             bail!("failed to build dist");
         }
     }
-
     Ok(())
 }

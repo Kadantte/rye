@@ -74,8 +74,8 @@ Use the `add` command to add dependencies to your project.
 rye add "flask>=2.0"
 ```
 
-Note that after `add` you need to run `sync` again to actually install it.  If you
-want to add packages from custom indexes, you have to [configure the source](sources.md)
+Followed by `rye sync` to install the dependency into the virtual environment. 
+If you want to add packages from custom indexes, you have to [configure the source](sources.md)
 first.
 
 ## Listing Dependencies
@@ -97,13 +97,14 @@ rye remove flask
 
 ## Working with the Project
 
-To run executables in the context of the virtualenv you can use the `run` command.  For
-instance if you want to use `black` you can add and run it like this:
+To run executables in the context of the virtualenv you can use the `run` command. For
+instance, to use `black`, add it to the project, sync the virtual environment, and run it
+over the current directory like this:
 
 ```
 rye add black
 rye sync
-rye run black
+rye run black .
 ```
 
 If you want to have the commands available directly you will need to activate the
@@ -135,4 +136,39 @@ virtualenv is located and more.
 
 ```
 rye show
+```
+
+## Executable projects
+
+To generate a project that is aimed to provide an executable
+script, use `rye init --script`:
+
+```shell
+rye init --script my-project
+cd my-project
+```
+
+The following structure will be created:
+
+```
+.
+├── .git
+├── .gitignore
+├── .python-version
+├── README.md
+├── pyproject.toml
+└── src
+    └── my_project
+        └── __init__.py
+        └── __main__.py
+```
+
+The [`pyproject.toml`](pyproject.md) will be generated with a
+[`[project.scripts]`](pyproject.md#projectscripts) section containing a
+`my-project` script that points to the `main()` function of `__init__.py`. After
+you synchronized your changes, you can run the script with `rye run my-project`.
+
+```shell
+rye sync
+rye run my-project
 ```

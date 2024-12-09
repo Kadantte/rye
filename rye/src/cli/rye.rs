@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::{env, fs};
 
 use anyhow::{anyhow, bail, Context, Error};
-use clap::{CommandFactory, Parser};
-use clap_complete::Shell;
+use clap::builder::PossibleValue;
+use clap::{CommandFactory, Parser, ValueEnum};
+use clap_complete::{Generator, Shell};
+use clap_complete_nushell::Nushell;
 use console::style;
 use minijinja::render;
 use self_replace::self_delete_outside_path;
@@ -21,15 +23,15 @@ use crate::bootstrap::{
 use crate::cli::toolchain::register_toolchain;
 use crate::config::Config;
 use crate::platform::{get_app_dir, symlinks_supported};
-use crate::sources::{get_download_url, PythonVersionRequest};
-use crate::utils::{check_checksum, toml, tui_theme, CommandOutput, QuietExit};
+use crate::sources::py::{get_download_url, PythonVersionRequest};
+use crate::utils::{check_checksum, toml, tui_theme, CommandOutput, IoPathContext, QuietExit};
 
 #[cfg(windows)]
 const DEFAULT_HOME: &str = "%USERPROFILE%\\.rye";
 #[cfg(unix)]
 const DEFAULT_HOME: &str = "$HOME/.rye";
 
-const GITHUB_REPO: &str = "https://github.com/mitsuhiko/rye";
+const GITHUB_REPO: &str = "https://github.com/astral-sh/rye";
 const UNIX_ENV_FILE: &str = r#"
 # rye shell setup
 {%- if custom_home %}
@@ -52,12 +54,80 @@ pub struct Args {
     command: SubCommand,
 }
 
+#[derive(Clone, Debug)]
+enum ShellCompletion {
+    /// Bourne Again SHell (bash)
+    Bash,
+    /// Elvish shell
+    Elvish,
+    /// Friendly Interactive SHell (fish)
+    Fish,
+    /// PowerShell
+    PowerShell,
+    /// Z SHell (zsh)
+    Zsh,
+    /// Nushell
+    Nushell,
+}
+
+impl ValueEnum for ShellCompletion {
+    /// Returns the variants for the shell completion.
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            ShellCompletion::Bash,
+            ShellCompletion::Elvish,
+            ShellCompletion::Fish,
+            ShellCompletion::PowerShell,
+            ShellCompletion::Zsh,
+            ShellCompletion::Nushell,
+        ]
+    }
+
+    /// Returns the possible value for the shell completion.
+    fn to_possible_value<'a>(&self) -> Option<PossibleValue> {
+        Some(match self {
+            ShellCompletion::Bash => PossibleValue::new("bash"),
+            ShellCompletion::Elvish => PossibleValue::new("elvish"),
+            ShellCompletion::Fish => PossibleValue::new("fish"),
+            ShellCompletion::PowerShell => PossibleValue::new("powershell"),
+            ShellCompletion::Zsh => PossibleValue::new("zsh"),
+            ShellCompletion::Nushell => PossibleValue::new("nushell"),
+        })
+    }
+}
+
+impl Generator for ShellCompletion {
+    /// Generate the file name for the completion script.
+    fn file_name(&self, name: &str) -> String {
+        match self {
+            ShellCompletion::Nushell => Nushell.file_name(name),
+            ShellCompletion::Bash => Shell::Bash.file_name(name),
+            ShellCompletion::Elvish => Shell::Elvish.file_name(name),
+            ShellCompletion::Fish => Shell::Fish.file_name(name),
+            ShellCompletion::PowerShell => Shell::PowerShell.file_name(name),
+            ShellCompletion::Zsh => Shell::Zsh.file_name(name),
+        }
+    }
+
+    /// Generate the completion script for the shell.
+    fn generate(&self, cmd: &clap::Command, buf: &mut dyn std::io::Write) {
+        match self {
+            ShellCompletion::Nushell => Nushell.generate(cmd, buf),
+            ShellCompletion::Bash => Shell::Bash.generate(cmd, buf),
+            ShellCompletion::Elvish => Shell::Elvish.generate(cmd, buf),
+            ShellCompletion::Fish => Shell::Fish.generate(cmd, buf),
+            ShellCompletion::PowerShell => Shell::PowerShell.generate(cmd, buf),
+            ShellCompletion::Zsh => Shell::Zsh.generate(cmd, buf),
+        }
+    }
+}
+
 /// Generates a completion script for a shell.
 #[derive(Parser, Debug)]
 pub struct CompletionCommand {
     /// The shell to generate a completion script for (defaults to 'bash').
     #[arg(short, long)]
-    shell: Option<Shell>,
+    shell: Option<ShellCompletion>,
 }
 
 /// Performs an update of rye.
@@ -75,6 +145,9 @@ pub struct UpdateCommand {
     /// Update to a specific git rev.
     #[arg(long, conflicts_with = "tag")]
     rev: Option<String>,
+    /// Update to a specific git branch.
+    #[arg(long, conflicts_with = "tag", conflicts_with = "rev")]
+    branch: Option<String>,
     /// Force reinstallation
     #[arg(long)]
     force: bool,
@@ -177,7 +250,7 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
 
 fn completion(args: CompletionCommand) -> Result<(), Error> {
     clap_complete::generate(
-        args.shell.unwrap_or(Shell::Bash),
+        args.shell.unwrap_or(ShellCompletion::Bash),
         &mut super::Args::command(),
         "rye",
         &mut std::io::stdout(),
@@ -192,12 +265,12 @@ fn update(args: UpdateCommand) -> Result<(), Error> {
     let current_exe = env::current_exe()?;
 
     // git based installation with cargo
-    if args.rev.is_some() || args.tag.is_some() {
+    if args.rev.is_some() || args.tag.is_some() || args.branch.is_some() {
         let mut cmd = Command::new("cargo");
         let tmp = tempdir()?;
         cmd.arg("install")
             .arg("--git")
-            .arg("https://github.com/mitsuhiko/rye")
+            .arg("https://github.com/astral-sh/rye")
             .arg("--root")
             .env(
                 "PATH",
@@ -214,6 +287,9 @@ fn update(args: UpdateCommand) -> Result<(), Error> {
         } else if let Some(ref tag) = args.tag {
             cmd.arg("--tag");
             cmd.arg(tag);
+        } else if let Some(ref branch) = args.branch {
+            cmd.arg("--branch");
+            cmd.arg(branch);
         }
         if args.force {
             cmd.arg("--force");
@@ -273,9 +349,50 @@ fn update(args: UpdateCommand) -> Result<(), Error> {
          Please stop running Python interpreters and retry the update.",
     )?;
 
+    echo!("Validate updated installation");
+    validate_updated_exe(&current_exe)
+        .context("unable to perform validation of updated installation")?;
+
     echo!("Updated!");
     echo!();
     Command::new(current_exe).arg("--version").status()?;
+
+    Ok(())
+}
+
+fn validate_updated_exe(rye: &Path) -> Result<(), Error> {
+    let folder = tempfile::tempdir()?;
+
+    // first create a dummy project via the new rye version
+    if !Command::new(rye)
+        .arg("init")
+        .arg("--name=test-project")
+        .arg("-q")
+        .arg(".")
+        .current_dir(folder.path())
+        .status()?
+        .success()
+    {
+        bail!("failed to initialize test project");
+    }
+
+    // then try to run the python shim in the context of that project.
+    // this as a by product should update outdated internals and perform
+    // a python only sync in all versions of rye known currently.
+    if !Command::new(
+        get_app_dir()
+            .join("shims")
+            .join("python")
+            .with_extension(EXE_EXTENSION),
+    )
+    .arg("-c")
+    .arg("")
+    .current_dir(folder.path())
+    .status()?
+    .success()
+    {
+        bail!("failed to run python shim in test project");
+    }
 
     Ok(())
 }
@@ -313,7 +430,7 @@ fn install(args: InstallCommand) -> Result<(), Error> {
 
 fn remove_dir_all_if_exists(path: &Path) -> Result<(), Error> {
     if path.is_dir() {
-        fs::remove_dir_all(path)?;
+        fs::remove_dir_all(path).path_context(path, "failed to remove directory")?;
     }
     Ok(())
 }
@@ -337,13 +454,15 @@ fn uninstall(args: UninstallCommand) -> Result<(), Error> {
         let shim_dir = app_dir.join("shims");
         if let Ok(dir) = shim_dir.read_dir() {
             for entry in dir.flatten() {
-                fs::remove_file(&entry.path()).ok();
+                fs::remove_file(entry.path()).ok();
             }
         }
 
         remove_dir_all_if_exists(&app_dir.join("self"))?;
         remove_dir_all_if_exists(&app_dir.join("py"))?;
         remove_dir_all_if_exists(&app_dir.join("pip-tools"))?;
+        remove_dir_all_if_exists(&app_dir.join("uv"))?;
+        remove_dir_all_if_exists(&app_dir.join("tools"))?;
 
         // special deleting logic if we are placed in the app dir and the shim deletion
         // did not succeed.  This is likely the case on windows where we then use the
@@ -387,9 +506,15 @@ fn uninstall(args: UninstallCommand) -> Result<(), Error> {
 }
 
 #[cfg(unix)]
-fn is_fish() -> bool {
-    use whattheshell::Shell;
-    Shell::infer().map_or(false, |x| matches!(x, Shell::Fish))
+fn has_fish() -> bool {
+    use which::which;
+    which("fish").is_ok()
+}
+
+#[cfg(unix)]
+fn has_zsh() -> bool {
+    use which::which;
+    which("zsh").is_ok()
 }
 
 fn perform_install(
@@ -419,7 +544,7 @@ fn perform_install(
 
     // Also pick up the target version from the RYE_TOOLCHAIN_VERSION
     // environment variable.
-    let toolchain_version_request = match toolchain_version {
+    let mut toolchain_version_request = match toolchain_version {
         Some(version) => Some(version),
         None => match env::var("RYE_TOOLCHAIN_VERSION") {
             Ok(val) => Some(val.parse()?),
@@ -435,7 +560,7 @@ fn perform_install(
         echo!("automatically started the installer for you. For more information");
         echo!(
             "read {}",
-            style("https://rye-up.com/guide/installation/").yellow()
+            style("https://rye.astral.sh/guide/installation/").yellow()
         );
     }
 
@@ -473,7 +598,7 @@ fn perform_install(
         echo!("enable symlinks. You need to enable this before continuing the setup.");
         echo!(
             "Learn more at {}",
-            style("https://rye-up.com/guide/faq/#windows-developer-mode").yellow()
+            style("https://rye.astral.sh/guide/faq/#windows-developer-mode").yellow()
         );
     }
 
@@ -485,23 +610,6 @@ fn perform_install(
     {
         elog!("Installation cancelled!");
         return Err(QuietExit(1).into());
-    }
-
-    // Use uv?
-    if config_doc
-        .get("behavior")
-        .and_then(|x| x.get("use-uv"))
-        .is_none()
-        && !matches!(mode, InstallMode::NoPrompts)
-        && dialoguer::Select::with_theme(tui_theme())
-            .with_prompt("Select the preferred package installer")
-            .item("pip-tools (slow but stable)")
-            .item("uv (quick but experimental)")
-            .default(0)
-            .interact()?
-            == 1
-    {
-        toml::ensure_table(config_doc, "behavior")["use-uv"] = toml_edit::value(true);
     }
 
     // If the global-python flag is not in the settings, ask the user if they want to turn
@@ -526,12 +634,17 @@ fn perform_install(
         // can fill in the default.
         if !matches!(mode, InstallMode::NoPrompts) {
             if toolchain_path.is_none() {
-                prompt_for_default_toolchain(
+                // Prompt the user for the default toolchain version.
+                let user_version_request = prompt_for_default_toolchain(
                     toolchain_version_request
                         .clone()
                         .unwrap_or(SELF_PYTHON_TARGET_VERSION),
                     config_doc,
                 )?;
+
+                // If the user has selected a toolchain version, we should use that as the default,
+                // unless the `RYE_TOOLCHAIN_VERSION` environment variable is set.
+                toolchain_version_request = toolchain_version_request.or(Some(user_version_request));
             } else {
                 prompt_for_toolchain_later = true;
             }
@@ -541,9 +654,9 @@ fn perform_install(
     // place executable in rye home folder
     fs::create_dir_all(&shims).ok();
     if target.is_file() {
-        fs::remove_file(&target)?;
+        fs::remove_file(&target).path_context(&target, "failed to delete old executable")?;
     }
-    fs::copy(exe, &target)?;
+    fs::copy(&exe, &target).path_context(&exe, "failed to copy executable")?;
     echo!("Installed binary to {}", style(target.display()).cyan());
 
     // write an env file we can source later.  Prefer $HOME/.rye over
@@ -553,10 +666,9 @@ fn perform_install(
         .unwrap_or((false, Cow::Borrowed(DEFAULT_HOME)));
 
     if cfg!(unix) {
-        fs::write(
-            app_dir.join("env"),
-            render!(UNIX_ENV_FILE, custom_home, rye_home),
-        )?;
+        let env_path = app_dir.join("env");
+        fs::write(&env_path, render!(UNIX_ENV_FILE, custom_home, rye_home))
+            .path_context(&env_path, "failed to write env file")?;
     }
 
     // Register a toolchain if provided.
@@ -665,7 +777,13 @@ fn add_rye_to_path(mode: &InstallMode, shims: &Path, ask: bool) -> Result<(), Er
             echo!();
             echo!("    source \"{}/env\"", rye_home.display());
             echo!();
-            if is_fish() {
+            if has_zsh() {
+                echo!("To make it work with zsh, you might need to add this to your .zprofile:");
+                echo!();
+                echo!("    source \"{}/env\"", rye_home.display());
+                echo!();
+            }
+            if has_fish() {
                 echo!("To make it work with fish, run this once instead:");
                 echo!();
                 echo!(
@@ -674,7 +792,7 @@ fn add_rye_to_path(mode: &InstallMode, shims: &Path, ask: bool) -> Result<(), Er
                 );
                 echo!();
             }
-            echo!("For more information read https://rye-up.com/guide/installation/");
+            echo!("For more information read https://rye.astral.sh/guide/installation/");
         }
     }
     // On Windows, we add the rye directory to the user's PATH unconditionally.
@@ -688,8 +806,8 @@ fn add_rye_to_path(mode: &InstallMode, shims: &Path, ask: bool) -> Result<(), Er
 
 fn prompt_for_default_toolchain(
     default_toolchain: PythonVersionRequest,
-    config_doc: &mut toml_edit::Document,
-) -> Result<(), Error> {
+    config_doc: &mut toml_edit::DocumentMut,
+) -> Result<PythonVersionRequest, Error> {
     let choice = dialoguer::Input::with_theme(tui_theme())
         .with_prompt("Which version of Python should be used as default toolchain?")
         .default(default_toolchain.clone())
@@ -705,7 +823,7 @@ fn prompt_for_default_toolchain(
         })
         .interact_text()?;
     toml::ensure_table(config_doc, "default")["toolchain"] = toml_edit::value(choice.to_string());
-    Ok(())
+    Ok(choice)
 }
 
 pub fn auto_self_install() -> Result<bool, Error> {

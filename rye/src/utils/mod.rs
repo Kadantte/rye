@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
+use std::ffi::OsString;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::{fmt, fs};
 
-use anyhow::{anyhow, bail, Error};
+use anyhow::{anyhow, bail, Context, Error};
 use dialoguer::theme::{ColorfulTheme, Theme};
 use once_cell::sync::Lazy;
 use pep508_rs::{Requirement, VersionOrUrl};
@@ -15,7 +16,7 @@ use sha2::{Digest, Sha256};
 static ENV_VAR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$\{([A-Z0-9_]+)\}").unwrap());
 
 #[cfg(unix)]
-pub use std::os::unix::fs::{symlink as symlink_file, symlink as symlink_dir};
+pub use std::os::unix::fs::symlink as symlink_file;
 #[cfg(windows)]
 pub use std::os::windows::fs::symlink_file;
 
@@ -34,7 +35,24 @@ pub(crate) mod windows;
 #[cfg(unix)]
 pub(crate) mod unix;
 
+pub(crate) mod panic;
+pub(crate) mod ruff;
 pub(crate) mod toml;
+
+pub trait IoPathContext {
+    type Out;
+
+    /// Adds path information to an error.
+    fn path_context<P: AsRef<Path>, D: fmt::Display>(self, p: P, msg: D) -> Self::Out;
+}
+
+impl<T, E: std::error::Error + Send + Sync + 'static> IoPathContext for Result<T, E> {
+    type Out = Result<T, Error>;
+
+    fn path_context<P: AsRef<Path>, D: fmt::Display>(self, p: P, msg: D) -> Self::Out {
+        self.with_context(|| format!("{} (at '{}')", msg, p.as_ref().display()))
+    }
+}
 
 #[cfg(windows)]
 pub fn symlink_dir<P, Q>(original: P, link: Q) -> Result<(), std::io::Error>
@@ -70,7 +88,8 @@ pub fn mark_path_sync_ignore(venv: &Path, mark_ignore: bool) -> Result<(), Error
 
         for flag in ATTRS {
             if mark_ignore {
-                xattr::set(venv, flag, b"1")?;
+                xattr::set(venv, flag, b"1")
+                    .path_context(venv, "failed to write extended attribute")?;
             } else {
                 xattr::remove(venv, flag).ok();
             }
@@ -82,7 +101,7 @@ pub fn mark_path_sync_ignore(venv: &Path, mark_ignore: bool) -> Result<(), Error
         let mut stream_path = venv.as_os_str().to_os_string();
         stream_path.push(":com.dropbox.ignored");
         if mark_ignore {
-            fs::write(stream_path, b"1")?;
+            fs::write(&stream_path, b"1").path_context(&stream_path, "failed to write stream")?;
         } else {
             fs::remove_file(stream_path).ok();
         }
@@ -125,6 +144,14 @@ impl CommandOutput {
             CommandOutput::Normal
         }
     }
+
+    pub fn quieter(&self) -> CommandOutput {
+        match self {
+            CommandOutput::Normal => CommandOutput::Quiet,
+            CommandOutput::Verbose => CommandOutput::Normal,
+            CommandOutput::Quiet => CommandOutput::Quiet,
+        }
+    }
 }
 
 /// Given a path checks if that path is executable.
@@ -139,7 +166,7 @@ pub fn is_executable(path: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        ["exe", "bat", "cmd"]
+        ["com", "exe", "bat", "cmd"]
             .iter()
             .any(|x| path.with_extension(x).is_file())
     }
@@ -154,7 +181,7 @@ pub fn get_short_executable_name(path: &Path) -> String {
     #[cfg(windows)]
     {
         let short_name = path.file_name().unwrap().to_string_lossy().to_lowercase();
-        for ext in [".exe", ".bat", ".cmd"] {
+        for ext in [".com", ".exe", ".bat", ".cmd"] {
             if let Some(base_name) = short_name.strip_suffix(ext) {
                 return base_name.into();
             }
@@ -167,7 +194,7 @@ pub fn get_short_executable_name(path: &Path) -> String {
 pub fn format_requirement(req: &Requirement) -> impl fmt::Display + '_ {
     struct Helper<'x>(&'x Requirement);
 
-    impl<'x> fmt::Display for Helper<'x> {
+    impl fmt::Display for Helper<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "{}", self.0.name)?;
             if let Some(extras) = &self.0.extras {
@@ -206,6 +233,16 @@ where
     F: for<'a> FnMut(&'a str) -> Option<String>,
 {
     ENV_VAR_RE.replace_all(string, |m: &Captures| f(&m[1]).unwrap_or_default())
+}
+
+/// Prepend the given path to the current value of the $PATH environment variable
+pub fn prepend_path_to_path_env(path: &Path) -> Result<OsString, Error> {
+    let mut paths = Vec::new();
+    paths.push(path.to_owned());
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    Ok(std::env::join_paths(paths)?)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -267,20 +304,25 @@ pub fn unpack_archive(contents: &[u8], dst: &Path, strip_components: usize) -> R
             let path = dst.join(components.as_path());
             if path != Path::new("") && path.strip_prefix(dst).is_ok() {
                 if file.name().ends_with('/') {
-                    fs::create_dir_all(&path)?;
+                    fs::create_dir_all(&path).path_context(&path, "failed to create directory")?;
                 } else {
                     if let Some(p) = path.parent() {
                         if !p.exists() {
-                            fs::create_dir_all(p)?;
+                            fs::create_dir_all(p).path_context(p, "failed to create directory")?;
                         }
                     }
-                    std::io::copy(&mut file, &mut fs::File::create(&path)?)?;
+                    std::io::copy(
+                        &mut file,
+                        &mut fs::File::create(&path)
+                            .path_context(&path, "failed to create file")?,
+                    )?;
                 }
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     if let Some(mode) = file.unix_mode() {
-                        fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+                        fs::set_permissions(&path, fs::Permissions::from_mode(mode))
+                            .path_context(&path, "failed to set permissions")?;
                     }
                 }
             }
@@ -397,7 +439,10 @@ pub fn copy_dir<T: AsRef<Path>>(from: T, to: T, options: &CopyDirOptions) -> Res
     let to = to.as_ref();
 
     if from.is_dir() {
-        for entry in fs::read_dir(from)?.filter_map(|e| e.ok()) {
+        for entry in fs::read_dir(from)
+            .path_context(from, "failed to enumerate directory")?
+            .filter_map(|e| e.ok())
+        {
             let entry_path = entry.path();
             if options.exclude.iter().any(|dir| *dir == entry_path) {
                 continue;
@@ -405,10 +450,12 @@ pub fn copy_dir<T: AsRef<Path>>(from: T, to: T, options: &CopyDirOptions) -> Res
 
             let destination = to.join(entry.file_name());
             if entry.file_type()?.is_dir() {
-                fs::create_dir_all(&destination)?;
+                fs::create_dir_all(&destination)
+                    .path_context(&destination, "failed to create directory")?;
                 copy_dir(entry.path(), destination, options)?;
             } else {
-                fs::copy(entry.path(), &destination)?;
+                fs::copy(entry.path(), &destination)
+                    .path_context(entry.path(), "failed to copy file")?;
             }
         }
     }
@@ -418,6 +465,20 @@ pub fn copy_dir<T: AsRef<Path>>(from: T, to: T, options: &CopyDirOptions) -> Res
 pub struct CopyDirOptions {
     /// Exclude paths
     pub exclude: Vec<PathBuf>,
+}
+
+/// Update the cloud synchronization marker for the given path
+/// based on the config flag.
+pub fn update_venv_sync_marker(output: CommandOutput, venv_path: &Path) {
+    if let Err(err) = mark_path_sync_ignore(venv_path, Config::current().venv_mark_sync_ignore()) {
+        if output != CommandOutput::Quiet && Config::current().venv_mark_sync_ignore() {
+            warn!(
+                "unable to mark virtualenv {} ignored for cloud sync: {}",
+                venv_path.display(),
+                err
+            );
+        }
+    }
 }
 
 #[test]

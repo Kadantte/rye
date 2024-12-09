@@ -6,14 +6,24 @@
 ----
 <div align="center">
 
-[![Rye](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mitsuhiko/rye/main/artwork/badge.json)](https://rye-up.com)
+[![Rye](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/rye/main/artwork/badge.json)](https://rye.astral.sh)
 [![](https://dcbadge.vercel.app/api/server/drbkcdtSbg?style=flat)](https://discord.gg/drbkcdtSbg)
 
 </div>
 
+> [!NOTE]
+>
+> If you're getting started with Rye, consider [uv](https://github.com/astral-sh/uv), the
+> [successor project](https://lucumr.pocoo.org/2024/2/15/rye-grows-with-uv/) from the same maintainers.
+> 
+> While Rye is actively maintained, uv offers a more stable and feature-complete experience, and is the recommended
+> choice for new projects.
+> 
+> Having trouble migrating? [Let us know what's missing.](https://github.com/astral-sh/rye/discussions/1342)
+
 Rye is a comprehensive project and package management solution for Python.
 Born from [its creator's](https://github.com/mitsuhiko) desire to establish a
-one-stop-shop for all Python users, Rye provides a unified experience to install and manages Python
+one-stop-shop for all Python users, Rye provides a unified experience to install and manage Python
 installations, `pyproject.toml` based projects, dependencies and virtualenvs
 seamlessly.  It's designed to accommodate complex projects, monorepos and to
 facilitate global tool installations.  Curious? [Watch an introduction](https://youtu.be/q99TYA7LnuA).
@@ -36,7 +46,7 @@ Rye picks and ships the right tools so you can get started in minutes:
 * **Managing Virtualenvs:** it uses the well established virtualenv library under the hood.
 * **Building Wheels:** it delegates that work largely to [build](https://pypi.org/project/build/).
 * **Publishing:** its publish command uses [twine](https://pypi.org/project/twine/) to accomplish this task.
-* **Locking and Dependency Installation:** is today implemented by using [unearth](https://pypi.org/project/unearth/) and [pip-tools](https://github.com/jazzband/pip-tools/).
+* **Locking and Dependency Installation:** is today implemented by using [uv](https://github.com/astral-sh/uv) with a fallback to [unearth](https://pypi.org/project/unearth/) and [pip-tools](https://github.com/jazzband/pip-tools/).
 * **Workspace support:** Rye lets you work with complex projects consisting
   of multiple libraries.
 
@@ -47,28 +57,28 @@ The installation takes just a minute:
 * **Linux and macOS:**
 
     ```
-    curl -sSf https://rye-up.com/get | bash
+    curl -sSf https://rye.astral.sh/get | bash
     ```
 
 * **Windows:**
 
-    Download and run the installer ([64bit Intel](https://github.com/mitsuhiko/rye/releases/latest/download/rye-x86_64-windows.exe) or [32bit Intel](https://github.com/mitsuhiko/rye/releases/latest/download/rye-x86-windows.exe)).
+    Download and run the installer ([64-bit (x86-64)](https://github.com/astral-sh/rye/releases/latest/download/rye-x86_64-windows.exe) or [32-bit (x86)](https://github.com/astral-sh/rye/releases/latest/download/rye-x86-windows.exe)).
 
-For more details and other options, refer to the [installation instructions](https://rye-up.com/guide/installation/).
+For more details and other options, refer to the [installation instructions](https://rye.astral.sh/guide/installation/).
 
 ## Learn More
 
 Did I spark your interest?
 
-* [Visit the Website](https://rye-up.com/)
-* [Read the Documentation](https://rye-up.com/guide/)
-* [Report Problems in the Issue Tracker](https://github.com/mitsuhiko/rye/issues)
+* [Visit the Website](https://rye.astral.sh/)
+* [Read the Documentation](https://rye.astral.sh/guide/)
+* [Report Problems in the Issue Tracker](https://github.com/astral-sh/rye/issues)
 
 ## More
 
-* [Discussion Forum](https://github.com/mitsuhiko/rye/discussions), to discuss the project
+* [Discussion Forum](https://github.com/astral-sh/rye/discussions), to discuss the project
   on GitHub
 * [Discord](https://discord.gg/drbkcdtSbg), for conversations with other developers in text form
-* [Issue Tracker](https://github.com/mitsuhiko/rye/issues), if you run into bugs or have suggestions
-* [Badges](https://rye-up.com/community/#badges), if you want to show that you use Rye
+* [Issue Tracker](https://github.com/astral-sh/rye/issues), if you run into bugs or have suggestions
+* [Badges](https://rye.astral.sh/community/#badges), if you want to show that you use Rye
 * License: MIT

@@ -2,12 +2,16 @@
 
 Adds a Python package to this project.  The command takes a PEP 508 requirement string
 but provides additional helper arguments to make this process more user friendly.  For
-instance instead of passing git references within the requiement string, the `--git`
+instance instead of passing git references within the requirement string, the `--git`
 parameter can be used.
 
-After a dependency is added it's not automatically installed.  To do that, you need to
-invoke the [`sync`](sync.md) command.  To remove a dependency again use the [`remove`](remove.md)
-command.
+If auto sync is disabled, after a dependency is added it's not automatically
+installed.  To do that, you need to invoke the [`sync`](sync.md) command or pass
+`--sync`.  To remove a dependency again use the [`remove`](remove.md) command.
+
++++ 0.26.0
+
+    Added support for auto-sync and the `--sync` / `--no-sync` flags.
 
 ## Example
 
@@ -30,6 +34,13 @@ Add a git dependency:
 ```
 $ rye add flask --git https://github.com/pallets/flask
 Added flask @ git+https://github.com/pallets/flask as regular dependency
+```
+
+Add a local dependency:
+
+```
+$ rye add packagename --path path/to/packagename
+Added packagename @ file:///path/to/packagename as regular dependency
 ```
 
 ## Arguments
@@ -62,10 +73,14 @@ Added flask @ git+https://github.com/pallets/flask as regular dependency
 
 * `--pre`: Include pre-releases when finding a package version
 
-* `--pin <PIN>`: Overrides the pin operator [possible values: `equal`, `tilde-equal``, `greater-than-equal``]
+* `--pin <PIN>`: Overrides the pin operator [possible values: `equal`, `tilde-equal`, `greater-than-equal`]
+
+* `--sync`: Runs `sync` automatically even if auto-sync is disabled.
+
+* `--no-sync`: Does not run `sync` automatically even if auto-sync is enabled.
 
 * `-v, --verbose`: Enables verbose diagnostics
 
 * `-q, --quiet`: Turns off all output
 
-* `-h, --help`: Print help (see a summary with '-h')
+* `-h, --help`: Print help (see a summary with `-h`)

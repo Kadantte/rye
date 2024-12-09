@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::consts::VENV_BIN;
 use crate::platform::{get_python_version_request_from_pyenv_pin, get_toolchain_python_bin};
 use crate::pyproject::{latest_available_python_version, PyProject};
-use crate::sources::PythonVersionRequest;
+use crate::sources::py::PythonVersionRequest;
 use crate::sync::{sync, SyncOptions};
 use crate::tui::redirect_to_stderr;
 use crate::utils::{exec_spawn, get_venv_python_bin, CommandOutput};
@@ -31,7 +31,7 @@ fn detect_shim(args: &[OsString]) -> Option<String> {
 
     // rye is itself placed in the shims folder, so it must not
     // detect itself.
-    if shim_name == "rye" || shim_name == "rye.exe" {
+    if shim_name.eq_ignore_ascii_case("rye") || shim_name.eq_ignore_ascii_case("rye.exe") {
         return None;
     }
 
@@ -132,7 +132,11 @@ fn is_pointless_windows_store_applink(path: &std::path::Path) -> bool {
         return false;
     }
 
-    let mut path_encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let mut path_encoded = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
     let reparse_handle = unsafe {
         CreateFileW(
             path_encoded.as_mut_ptr(),
@@ -183,7 +187,7 @@ fn get_shim_target(
 ) -> Result<Option<Vec<OsString>>, Error> {
     // if we can find a project, we always look for a local virtualenv first for shims.
     if let Some(pyproject) = pyproject {
-        // However we only allow automatic synching, if we are rye managed.
+        // However we only allow automatic syncing, if we are rye managed.
         if pyproject.rye_managed() {
             let _guard = redirect_to_stderr(true);
             sync(SyncOptions::python_only()).context("sync ahead of shim resolution failed")?;
@@ -323,7 +327,7 @@ pub fn execute_shim(args: &[OsString]) -> Result<(), Error> {
                     "Target Python binary '{}' not found.\nYou are currently outside of a project. \
                     To resolve this, consider enabling global shims. \
                     Global shims allow for a Rye-managed Python installation.\n\
-                    For more information: https://rye-up.com/guide/shims/#global-shims", shim_name
+                    For more information: https://rye.astral.sh/guide/shims/#global-shims", shim_name
                 );
             }
         } else {

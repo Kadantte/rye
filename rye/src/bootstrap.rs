@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::env::consts::EXE_EXTENSION;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{self, AtomicBool};
 use std::{env, fs};
 
@@ -10,21 +9,17 @@ use anyhow::{anyhow, bail, Context, Error};
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
-use tempfile::NamedTempFile;
+use tempfile::tempdir_in;
 
 use crate::config::Config;
-use crate::consts::VENV_BIN;
-use crate::piptools::LATEST_PIP;
 use crate::platform::{
-    get_app_dir, get_canonical_py_path, get_toolchain_python_bin, list_known_toolchains,
-    symlinks_supported,
+    get_app_dir, get_canonical_py_path, get_python_bin_within, get_toolchain_python_bin,
+    list_known_toolchains,
 };
 use crate::pyproject::latest_available_python_version;
-use crate::sources::{get_download_url, PythonVersion, PythonVersionRequest};
-use crate::utils::{
-    check_checksum, get_venv_python_bin, set_proxy_variables, symlink_file, unpack_archive,
-    CommandOutput,
-};
+use crate::sources::py::{get_download_url, PythonVersion, PythonVersionRequest};
+use crate::utils::{check_checksum, symlink_file, unpack_archive, CommandOutput, IoPathContext};
+use crate::uv::UvBuilder;
 
 /// this is the target version that we want to fetch
 pub const SELF_PYTHON_TARGET_VERSION: PythonVersionRequest = PythonVersionRequest {
@@ -37,11 +32,11 @@ pub const SELF_PYTHON_TARGET_VERSION: PythonVersionRequest = PythonVersionReques
     suffix: None,
 };
 
-const SELF_VERSION: u64 = 12;
+const SELF_VERSION: u64 = 26;
 
-const SELF_REQUIREMENTS: &str = r#"
-build==1.0.3
-certifi==2023.11.17
+pub const SELF_REQUIREMENTS: &str = r#"
+build==1.2.1
+certifi==2024.2.2
 charset-normalizer==3.3.2
 click==8.1.7
 distlib==0.3.8
@@ -52,12 +47,11 @@ platformdirs==4.0.0
 pyproject_hooks==1.0.0
 requests==2.31.0
 tomli==2.0.1
-twine==4.0.2
+twine==5.1.1
 unearth==0.14.0
 urllib3==2.0.7
 virtualenv==20.25.0
-ruff==0.1.14
-uv==0.1.3
+ruff==0.8.2
 "#;
 
 static FORCED_TO_UPDATE: AtomicBool = AtomicBool::new(false);
@@ -71,6 +65,28 @@ fn is_up_to_date() -> bool {
     *UP_TO_UPDATE || FORCED_TO_UPDATE.load(atomic::Ordering::Relaxed)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum SelfVenvStatus {
+    NotUpToDate,
+    DoesNotExist,
+}
+
+/// Get self venv path and check if it exists and is up to date
+pub fn get_self_venv_status() -> Result<PathBuf, (PathBuf, SelfVenvStatus)> {
+    let app_dir = get_app_dir();
+    let venv_dir = app_dir.join("self");
+
+    if venv_dir.is_dir() {
+        if is_up_to_date() {
+            Ok(venv_dir)
+        } else {
+            Err((venv_dir, SelfVenvStatus::NotUpToDate))
+        }
+    } else {
+        Err((venv_dir, SelfVenvStatus::DoesNotExist))
+    }
+}
+
 /// Bootstraps the venv for rye itself
 pub fn ensure_self_venv(output: CommandOutput) -> Result<PathBuf, Error> {
     ensure_self_venv_with_toolchain(output, None)
@@ -82,27 +98,31 @@ pub fn ensure_self_venv_with_toolchain(
     toolchain_version_request: Option<PythonVersionRequest>,
 ) -> Result<PathBuf, Error> {
     let app_dir = get_app_dir();
-    let venv_dir = app_dir.join("self");
-    let pip_tools_dir = app_dir.join("pip-tools");
 
-    if venv_dir.is_dir() {
-        if is_up_to_date() {
-            return Ok(venv_dir);
-        } else {
-            if output != CommandOutput::Quiet {
-                echo!("detected outdated rye internals. Refreshing");
-            }
-            fs::remove_dir_all(&venv_dir).context("could not remove self-venv for update")?;
+    let venv_dir = match get_self_venv_status() {
+        Ok(venv_dir) => return Ok(venv_dir),
+        Err((venv_dir, SelfVenvStatus::DoesNotExist)) => venv_dir,
+        Err((venv_dir, SelfVenvStatus::NotUpToDate)) => {
+            echo!(if output, "Detected outdated rye internals. Refreshing");
+            fs::remove_dir_all(&venv_dir)
+                .path_context(&venv_dir, "could not remove self-venv for update")?;
+
+            let pip_tools_dir = app_dir.join("pip-tools");
             if pip_tools_dir.is_dir() {
                 fs::remove_dir_all(&pip_tools_dir)
                     .context("could not remove pip-tools for update")?;
             }
-        }
-    }
 
-    if output != CommandOutput::Quiet {
-        echo!("Bootstrapping rye internals");
-    }
+            venv_dir
+        }
+    };
+
+    echo!(if output, "Bootstrapping rye internals");
+
+    // Ensure we have uv
+    let uv = UvBuilder::new()
+        .with_output(CommandOutput::Quiet)
+        .ensure_exists()?;
 
     let version = match toolchain_version_request {
         Some(ref version_request) => ensure_specific_self_toolchain(output, version_request)
@@ -129,153 +149,87 @@ pub fn ensure_self_venv_with_toolchain(
     }
 
     // initialize the virtualenv
-    let mut venv_cmd = Command::new(&py_bin);
-    venv_cmd.arg("-mvenv");
-    venv_cmd.arg("--upgrade-deps");
+    {
+        let uv_venv = uv.venv(&venv_dir, &py_bin, &version, None)?;
+        // write our marker
+        uv_venv.write_marker()?;
+        // update our requirements
+        uv_venv.update_requirements(SELF_REQUIREMENTS)?;
 
-    // unlike virtualenv which we use after bootstrapping, the stdlib python
-    // venv does not detect symlink support itself and needs to be coerced into
-    // when available.
-    if cfg!(windows) && symlinks_supported() {
-        venv_cmd.arg("--symlinks");
+        // Update the shims
+        let shims = app_dir.join("shims");
+        if !shims.is_dir() {
+            fs::create_dir_all(&shims).path_context(&shims, "tried to create shim folder")?;
+        }
+
+        // if rye is itself installed into the shims folder, we want to
+        // use that.  Otherwise we fall back to the current executable
+        let mut this = shims.join("rye").with_extension(EXE_EXTENSION);
+        if !this.is_file() {
+            this = env::current_exe()?;
+        }
+
+        update_core_shims(&shims, &this)?;
+
+        uv_venv.write_tool_version(SELF_VERSION)?;
     }
 
-    venv_cmd.arg(&venv_dir);
-    set_proxy_variables(&mut venv_cmd);
-
-    let status = venv_cmd.status().with_context(|| {
-        format!(
-            "unable to create self venv using {}. It might be that \
-             the used Python build is incompatible with this machine. \
-             For more information see https://rye-up.com/guide/installation/",
-            py_bin.display()
-        )
-    })?;
-    if !status.success() {
-        bail!("failed to initialize virtualenv in {}", venv_dir.display());
-    }
-
-    do_update(output, &venv_dir, app_dir)?;
-
-    fs::write(venv_dir.join("tool-version.txt"), SELF_VERSION.to_string())?;
     FORCED_TO_UPDATE.store(true, atomic::Ordering::Relaxed);
 
     Ok(venv_dir)
 }
 
-fn do_update(output: CommandOutput, venv_dir: &Path, app_dir: &Path) -> Result<(), Error> {
-    if output != CommandOutput::Quiet {
-        echo!("Upgrading pip");
-    }
-    let venv_bin = venv_dir.join(VENV_BIN);
-
-    let mut pip_install_cmd = Command::new(get_venv_python_bin(venv_dir));
-    pip_install_cmd.arg("-mpip");
-    pip_install_cmd.arg("install");
-    pip_install_cmd.arg("--upgrade");
-
-    // This pip is only used for shim usage and is known to not support 3.7.  pip-tools
-    // use their own local pip versions that are compatible.
-    pip_install_cmd.arg(LATEST_PIP);
-
-    if output == CommandOutput::Verbose {
-        pip_install_cmd.arg("--verbose");
-    } else {
-        pip_install_cmd.arg("--quiet");
-        pip_install_cmd.env("PYTHONWARNINGS", "ignore");
-    }
-    pip_install_cmd.env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
-    let status = pip_install_cmd
-        .status()
-        .context("unable to self-upgrade pip")?;
-    if !status.success() {
-        bail!("failed to initialize virtualenv (upgrade pip)");
-    }
-    let mut req_file = NamedTempFile::new()?;
-    writeln!(req_file, "{}", SELF_REQUIREMENTS)?;
-    let mut pip_install_cmd = Command::new(venv_bin.join("pip"));
-    pip_install_cmd
-        .arg("install")
-        .arg("-r")
-        .arg(req_file.path())
-        .env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
-    if output != CommandOutput::Quiet {
-        echo!("Installing internal dependencies");
-    }
-    if output == CommandOutput::Verbose {
-        pip_install_cmd.arg("--verbose");
-    } else {
-        pip_install_cmd.arg("--quiet");
-        pip_install_cmd.env("PYTHONWARNINGS", "ignore");
-    }
-    set_proxy_variables(&mut pip_install_cmd);
-    let status = pip_install_cmd
-        .status()
-        .context("unable to install self-dependencies")?;
-    if !status.success() {
-        bail!("failed to initialize virtualenv (install dependencies)");
-    }
-    let shims = app_dir.join("shims");
-    if !shims.is_dir() {
-        fs::create_dir_all(&shims).context("tried to create shim folder")?;
-    }
-
-    // if rye is itself installed into the shims folder, we want to
-    // use that.  Otherwise we fall back to the current executable
-    let mut this = shims.join("rye").with_extension(EXE_EXTENSION);
-    if !this.is_file() {
-        this = env::current_exe()?;
-    }
-
-    update_core_shims(&shims, &this)?;
-
-    Ok(())
-}
-
 pub fn update_core_shims(shims: &Path, this: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
+        let py_shim = shims.join("python");
+        let py3_shim = shims.join("python3");
+
         // on linux we cannot symlink at all, as this will misreport.  We will try to do
         // hardlinks and if that fails, we fall back to copying the entire file over.  This
         // for instance is needed when the rye executable is placed on a different volume
         // than ~/.rye/shims
         if cfg!(target_os = "linux") {
-            fs::remove_file(shims.join("python")).ok();
-            if fs::hard_link(this, shims.join("python")).is_err() {
-                fs::copy(this, shims.join("python")).context("tried to copy python shim")?;
+            fs::remove_file(&py_shim).ok();
+            if fs::hard_link(this, &py_shim).is_err() {
+                fs::copy(this, &py_shim).path_context(&py_shim, "tried to copy python shim")?;
             }
-            fs::remove_file(shims.join("python3")).ok();
-            if fs::hard_link(this, shims.join("python3")).is_err() {
-                fs::copy(this, shims.join("python2")).context("tried to copy python3 shim")?;
+            fs::remove_file(&py3_shim).ok();
+            if fs::hard_link(this, &py3_shim).is_err() {
+                fs::copy(this, &py3_shim).path_context(&py_shim, "tried to copy python3 shim")?;
             }
 
         // on other unices we always use symlinks
         } else {
-            fs::remove_file(shims.join("python")).ok();
-            symlink_file(this, shims.join("python")).context("tried to symlink python shim")?;
-            fs::remove_file(shims.join("python3")).ok();
-            symlink_file(this, shims.join("python3")).context("tried to symlink python3 shim")?;
+            fs::remove_file(&py_shim).ok();
+            symlink_file(this, &py_shim).path_context(&py_shim, "tried to symlink python shim")?;
+            fs::remove_file(&py3_shim).ok();
+            symlink_file(this, &py3_shim)
+                .path_context(&py3_shim, "tried to symlink python3 shim")?;
         }
     }
 
     #[cfg(windows)]
     {
+        let py_shim = shims.join("python.exe");
+        let pyw_shim = shims.join("pythonw.exe");
+        let py3_shim = shims.join("python3.exe");
+
         // on windows we need privileges to symlink.  Not everyone might have that, so we
         // fall back to hardlinks.
-        fs::remove_file(shims.join("python.exe")).ok();
-        if symlink_file(this, shims.join("python.exe")).is_err() {
-            fs::hard_link(this, shims.join("python.exe"))
-                .context("tried to symlink python shim")?;
+        fs::remove_file(&py_shim).ok();
+        if symlink_file(this, &py_shim).is_err() {
+            fs::hard_link(this, &py_shim).path_context(&py_shim, "tried to symlink python shim")?;
         }
-        fs::remove_file(shims.join("python3.exe")).ok();
-        if symlink_file(this, shims.join("python3.exe")).is_err() {
-            fs::hard_link(this, shims.join("python3.exe"))
-                .context("tried to symlink python shim")?;
+        fs::remove_file(&py3_shim).ok();
+        if symlink_file(this, &py3_shim).is_err() {
+            fs::hard_link(this, &py3_shim)
+                .path_context(&py3_shim, "tried to symlink python3 shim")?;
         }
-        fs::remove_file(shims.join("pythonw.exe")).ok();
-        if symlink_file(this, shims.join("pythonw.exe")).is_err() {
-            fs::hard_link(this, shims.join("pythonw.exe"))
-                .context("tried to symlink pythonw shim")?;
+        fs::remove_file(&pyw_shim).ok();
+        if symlink_file(this, &pyw_shim).is_err() {
+            fs::hard_link(this, &pyw_shim)
+                .path_context(&pyw_shim, "tried to symlink pythonw shim")?;
         }
     }
 
@@ -328,9 +282,9 @@ pub fn get_pip_module(venv: &Path) -> Result<PathBuf, Error> {
     Ok(rv)
 }
 
-/// we only support cpython 3.9 to 3.12
+/// we only support cpython 3.9 to 3.13
 pub fn is_self_compatible_toolchain(version: &PythonVersion) -> bool {
-    version.name == "cpython" && version.major == 3 && version.minor >= 9 && version.minor <= 12
+    version.name == "cpython" && version.major == 3 && version.minor >= 9 && version.minor <= 13
 }
 
 /// Ensure that the toolchain for the self environment is available.
@@ -343,15 +297,17 @@ fn ensure_latest_self_toolchain(output: CommandOutput) -> Result<PythonVersion, 
         .into_iter()
         .max()
     {
-        if output != CommandOutput::Quiet {
-            echo!(
-                "Found a compatible Python version: {}",
-                style(&version).cyan()
-            );
-        }
+        echo!(
+            if output,
+            "Found a compatible Python version: {}",
+            style(&version).cyan()
+        );
         Ok(version)
     } else {
-        fetch(&SELF_PYTHON_TARGET_VERSION, output)
+        fetch(
+            &SELF_PYTHON_TARGET_VERSION,
+            FetchOptions::with_output(output),
+        )
     }
 }
 
@@ -369,84 +325,184 @@ fn ensure_specific_self_toolchain(
         );
     }
     if !get_toolchain_python_bin(&toolchain_version)?.is_file() {
-        if output != CommandOutput::Quiet {
-            echo!(
-                "Fetching requested internal toolchain '{}'",
-                toolchain_version
-            );
-        }
-        fetch(&toolchain_version.into(), output)
+        echo!(
+            if output,
+            "Fetching requested internal toolchain '{}'",
+            toolchain_version
+        );
+        fetch(&toolchain_version.into(), FetchOptions::with_output(output))
     } else {
-        if output != CommandOutput::Quiet {
-            echo!(
-                "Found a compatible Python version: {}",
-                style(&toolchain_version).cyan()
-            );
-        }
+        echo!(
+            if output,
+            "Found a compatible Python version: {}",
+            style(&toolchain_version).cyan()
+        );
         Ok(toolchain_version)
     }
 }
+
+/// Fetches a python installer.
+pub struct FetchOptions {
+    /// How verbose should the sync be?
+    pub output: CommandOutput,
+    /// Forces re-downloads even if they are already there.
+    pub force: bool,
+    /// Causes a fetch into a non standard location.
+    pub target_path: Option<PathBuf>,
+    /// Include build info (overrides configured default).
+    pub build_info: Option<bool>,
+}
+
+impl FetchOptions {
+    /// Basic fetch options.
+    pub fn with_output(output: CommandOutput) -> FetchOptions {
+        FetchOptions {
+            output,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for FetchOptions {
+    fn default() -> Self {
+        Self {
+            output: CommandOutput::Normal,
+            force: false,
+            target_path: None,
+            build_info: None,
+        }
+    }
+}
+
 /// Fetches a version if missing.
 pub fn fetch(
     version: &PythonVersionRequest,
-    output: CommandOutput,
+    options: FetchOptions,
 ) -> Result<PythonVersion, Error> {
-    if let Ok(version) = PythonVersion::try_from(version.clone()) {
-        let py_bin = get_toolchain_python_bin(&version)?;
-        if py_bin.is_file() {
-            if output == CommandOutput::Verbose {
-                echo!("Python version already downloaded. Skipping.");
+    // Check if there is registered toolchain that matches the request
+    if options.target_path.is_none() {
+        if let Ok(version) = PythonVersion::try_from(version.clone()) {
+            let py_bin = get_toolchain_python_bin(&version)?;
+            if !options.force && py_bin.is_file() {
+                echo!(if verbose options.output, "Python version already downloaded. Skipping.");
+                return Ok(version);
             }
-            return Ok(version);
         }
     }
-
     let (version, url, sha256) = match get_download_url(version) {
         Some(result) => result,
         None => bail!("unknown version {}", version),
     };
 
-    let target_dir = get_canonical_py_path(&version)?;
-    let target_py_bin = get_toolchain_python_bin(&version)?;
-    if output == CommandOutput::Verbose {
-        echo!("target dir: {}", target_dir.display());
-    }
-    if target_dir.is_dir() && target_py_bin.is_file() {
-        if output == CommandOutput::Verbose {
-            echo!("Python version already downloaded. Skipping.");
+    let target_dir = match options.target_path {
+        Some(ref target_dir) => {
+            if target_dir.is_file() {
+                bail!("target directory '{}' is a file", target_dir.display());
+            }
+            echo!(if options.output, "Downloading to '{}'", target_dir.display());
+            if target_dir.is_dir() {
+                if options.force {
+                    // Refuse to remove the target directory if it's not empty and not a python installation
+                    if target_dir.read_dir()?.next().is_some()
+                        && !get_python_bin_within(target_dir).exists()
+                    {
+                        bail!(
+                            "target directory '{}' exists and is not a Python installation",
+                            target_dir.display()
+                        );
+                    }
+                    fs::remove_dir_all(target_dir)
+                        .path_context(target_dir, "could not remove target directory")?;
+                } else {
+                    bail!("target directory '{}' exists", target_dir.display());
+                }
+            }
+            Cow::Borrowed(target_dir.as_path())
         }
-        return Ok(version);
-    }
+        None => {
+            let target_dir = get_canonical_py_path(&version)?;
+            let target_py_bin = get_toolchain_python_bin(&version)?;
+            if target_py_bin.is_file() {
+                if !options.force {
+                    echo!(if verbose options.output, "Python version already downloaded. Skipping.");
+                    return Ok(version);
+                }
+                echo!(if options.output, "Removing the existing Python version");
+                fs::remove_dir_all(&target_dir).with_context(|| {
+                    format!("failed to remove target folder {}", target_dir.display())
+                })?;
+            }
+            echo!(if verbose options.output, "target dir: {}", target_dir.display());
+            Cow::Owned(target_dir)
+        }
+    };
 
-    fs::create_dir_all(&target_dir)
-        .with_context(|| format!("failed to create target folder {}", target_dir.display()))?;
-
-    if output == CommandOutput::Verbose {
-        echo!("download url: {}", url);
-    }
-    if output != CommandOutput::Quiet {
-        echo!("{} {}", style("Downloading").cyan(), version);
-    }
-    let archive_buffer = download_url(url, output)?;
+    echo!(if verbose options.output, "download url: {}", url);
+    echo!(if options.output, "{} {}", style("Downloading").cyan(), version);
+    let archive_buffer = download_url(url, options.output)?;
 
     if let Some(sha256) = sha256 {
-        if output != CommandOutput::Quiet {
-            echo!("{}", style("Checking checksum").cyan());
-        }
+        echo!(if options.output, "{} {}", style("Checking").cyan(), "checksum");
         check_checksum(&archive_buffer, sha256)
-            .with_context(|| format!("hash check of {} failed", &url))?;
-    } else if output != CommandOutput::Quiet {
-        echo!("Checksum check skipped (no hash available)");
+            .with_context(|| format!("Checksum check of {} failed", &url))?;
+    } else {
+        echo!(if options.output, "Checksum check skipped (no hash available)");
     }
 
-    unpack_archive(&archive_buffer, &target_dir, 1)
-        .with_context(|| format!("unpacking of downloaded tarball {} failed", &url))?;
+    echo!(if options.output, "{}", style("Unpacking").cyan());
 
-    if output != CommandOutput::Quiet {
-        echo!("{} Downloaded {}", style("success:").green(), version);
+    let parent = target_dir
+        .parent()
+        .ok_or_else(|| anyhow!("cannot unpack to root"))?;
+    if !parent.exists() {
+        fs::create_dir_all(parent).path_context(&target_dir, "failed to create target folder")?;
     }
+
+    let with_build_info = options
+        .build_info
+        .unwrap_or_else(|| Config::current().fetch_with_build_info());
+    let temp_dir = tempdir_in(parent).context("temporary unpack location")?;
+
+    unpack_archive(&archive_buffer, temp_dir.path(), 1).with_context(|| {
+        format!(
+            "unpacking of downloaded tarball {} to '{}' failed",
+            &url,
+            temp_dir.path().display(),
+        )
+    })?;
+
+    // if we want to retain build infos or the installation has no build infos, then move
+    // the folder into the permanent location
+    if with_build_info || !installation_has_build_info(temp_dir.path()) {
+        let temp_dir = temp_dir.into_path();
+        fs::rename(&temp_dir, &target_dir).inspect_err(|_| {
+            fs::remove_dir_all(&temp_dir).ok();
+        })
+
+    // otherwise move the contents of the `install` folder over.
+    } else {
+        fs::rename(temp_dir.path().join("install"), &target_dir)
+    }
+    .path_context(&target_dir, "unable to persist download")?;
+
+    echo!(if options.output, "{} {}", style("Downloaded").green(), version);
 
     Ok(version)
+}
+
+fn installation_has_build_info(p: &Path) -> bool {
+    let mut has_install = false;
+    let mut has_build = false;
+    if let Ok(dir) = p.read_dir() {
+        for entry in dir.flatten() {
+            match entry.file_name().to_str() {
+                Some("install") => has_install = true,
+                Some("build") => has_build = true,
+                _ => {}
+            }
+        }
+    }
+    has_install && has_build
 }
 
 pub fn download_url(url: &str, output: CommandOutput) -> Result<Vec<u8>, Error> {
@@ -529,6 +585,7 @@ pub fn download_url_ignore_404(url: &str, output: CommandOutput) -> Result<Optio
 
 #[cfg(target_os = "linux")]
 fn validate_shared_libraries(py: &Path) -> Result<(), Error> {
+    use std::process::Command;
     let out = Command::new("ldd")
         .arg(py)
         .output()
@@ -559,6 +616,6 @@ fn validate_shared_libraries(py: &Path) -> Result<(), Error> {
     }
     bail!(
         "Python installation is unable to run on this machine due to missing libraries.\n\
-        Visit https://rye-up.com/guide/faq/#missing-shared-libraries-on-linux for next steps."
+        Visit https://rye.astral.sh/guide/faq/#missing-shared-libraries-on-linux for next steps."
     );
 }

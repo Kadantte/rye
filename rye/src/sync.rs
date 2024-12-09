@@ -1,27 +1,21 @@
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::{env, fs};
 
 use anyhow::{bail, Context, Error};
 use console::style;
 use same_file::is_same_file;
 use serde::{Deserialize, Serialize};
-use tempfile::tempdir;
 
-use crate::bootstrap::{ensure_self_venv, fetch, get_pip_module};
-use crate::config::Config;
-use crate::consts::VENV_BIN;
+use crate::bootstrap::{ensure_self_venv, fetch, FetchOptions};
 use crate::lock::{
-    make_project_root_fragment, update_single_project_lockfile, update_workspace_lockfile,
-    LockMode, LockOptions,
+    update_single_project_lockfile, update_workspace_lockfile, KeyringProvider, LockMode,
+    LockOptions,
 };
-use crate::piptools::{get_pip_sync, get_pip_tools_venv_path};
 use crate::platform::get_toolchain_python_bin;
 use crate::pyproject::{read_venv_marker, ExpandedSources, PyProject};
-use crate::sources::PythonVersion;
-use crate::utils::{
-    get_venv_python_bin, mark_path_sync_ignore, set_proxy_variables, symlink_dir, CommandOutput,
-};
+use crate::sources::py::PythonVersion;
+use crate::utils::{get_venv_python_bin, CommandOutput, IoPathContext};
+use crate::uv::{UvBuilder, UvSyncOptions};
 
 /// Controls the sync mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -54,6 +48,8 @@ pub struct SyncOptions {
     pub lock_options: LockOptions,
     /// Explicit pyproject location (Only usable by PythonOnly mode)
     pub pyproject: Option<PathBuf>,
+    /// Keyring provider to use for credential lookup.
+    pub keyring_provider: KeyringProvider,
 }
 
 impl SyncOptions {
@@ -72,10 +68,16 @@ impl SyncOptions {
 }
 
 /// Config written into the virtualenv for sync purposes.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct VenvMarker {
     pub python: PythonVersion,
     pub venv_path: Option<PathBuf>,
+}
+
+impl VenvMarker {
+    pub fn is_compatible(&self, py_ver: &PythonVersion) -> bool {
+        self.python == *py_ver
+    }
 }
 
 /// Synchronizes a project's virtualenv.
@@ -95,6 +97,16 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
         bail!("cannot sync or generate lockfile: package needs 'pyproject.toml'");
     }
 
+    // Turn on generate_hashes if the project demands it.
+    if pyproject.generate_hashes() {
+        cmd.lock_options.generate_hashes = true;
+    }
+
+    // Turn on universal locking if the project demands it.
+    if pyproject.universal() {
+        cmd.lock_options.universal = true;
+    }
+
     // Turn on locking with sources if the project demands it.
     if pyproject.lock_with_sources() {
         cmd.lock_options.with_sources = true;
@@ -107,33 +119,29 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
     if venv.is_dir() {
         if let Some(marker) = read_venv_marker(&venv) {
             if marker.python != py_ver {
-                if cmd.output != CommandOutput::Quiet {
-                    echo!(
-                        "Python version mismatch (found {}, expected {}), recreating.",
-                        marker.python,
-                        py_ver
-                    );
-                }
+                echo!(
+                    if cmd.output,
+                    "Python version mismatch (found {}, expected {}), recreating.",
+                    marker.python,
+                    py_ver
+                );
                 recreate = true;
             } else if let Some(ref venv_path) = marker.venv_path {
                 // for virtualenvs that have a location identifier, check if we need to
                 // recreate it.  On IO error we know that one of the paths is gone, so
                 // something needs recreation.
                 if !is_same_file(&venv, venv_path).unwrap_or(false) {
-                    if cmd.output != CommandOutput::Quiet {
-                        echo!(
-                            "Detected relocated virtualenv ({} => {}), recreating.",
-                            venv_path.display(),
-                            venv.display(),
-                        );
-                    }
+                    echo!(
+                        if cmd.output,
+                        "Detected relocated virtualenv ({} => {}), recreating.",
+                        venv_path.display(),
+                        venv.display(),
+                    );
                     recreate = true;
                 }
             }
         } else if cmd.force {
-            if cmd.output != CommandOutput::Quiet {
-                echo!("Forcing re-creation of non-rye managed virtualenv");
-            }
+            echo!(if cmd.output, "Forcing re-creation of non-rye managed virtualenv");
             recreate = true;
         } else if cmd.mode == SyncMode::PythonOnly {
             // in python-only sync mode, don't complain about foreign venvs
@@ -144,40 +152,29 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
     }
 
     // make sure we have a compatible python version
-    let py_ver =
-        fetch(&py_ver.into(), output).context("failed fetching toolchain ahead of sync")?;
+    let py_ver = fetch(&py_ver.into(), FetchOptions::with_output(output))
+        .context("failed fetching toolchain ahead of sync")?;
 
     // kill the virtualenv if it's there and we need to get rid of it.
     if recreate && venv.is_dir() {
-        fs::remove_dir_all(&venv).context("failed to delete existing virtualenv")?;
+        fs::remove_dir_all(&venv).path_context(&venv, "failed to delete existing virtualenv")?;
     }
 
     if venv.is_dir() {
         // we only care about this output if regular syncs are used
-        if !matches!(cmd.mode, SyncMode::PythonOnly | SyncMode::LockOnly)
-            && output != CommandOutput::Quiet
-        {
-            echo!("Reusing already existing virtualenv");
+        if !matches!(cmd.mode, SyncMode::PythonOnly | SyncMode::LockOnly) {
+            echo!(if output, "Reusing already existing virtualenv");
         }
     } else {
-        if output != CommandOutput::Quiet {
-            echo!(
-                "Initializing new virtualenv in {}",
-                style(venv.display()).cyan()
-            );
-            echo!("Python version: {}", style(&py_ver).cyan());
-        }
+        echo!(
+            if output,
+            "Initializing new virtualenv in {}",
+            style(venv.display()).cyan()
+        );
+        echo!(if output, "Python version: {}", style(&py_ver).cyan());
         let prompt = pyproject.name().unwrap_or("venv");
         create_virtualenv(output, &self_venv, &py_ver, &venv, prompt)
             .context("failed creating virtualenv ahead of sync")?;
-        fs::write(
-            venv.join("rye-venv.json"),
-            serde_json::to_string_pretty(&VenvMarker {
-                python: py_ver.clone(),
-                venv_path: Some(venv.clone().into()),
-            })?,
-        )
-        .context("failed writing venv marker file")?;
     }
 
     // prepare necessary utilities for pip-sync.  This is a super crude
@@ -204,6 +201,7 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
                 cmd.output,
                 &sources,
                 &cmd.lock_options,
+                cmd.keyring_provider,
             )
             .context("could not write production lockfile for workspace")?;
             update_workspace_lockfile(
@@ -214,6 +212,7 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
                 cmd.output,
                 &sources,
                 &cmd.lock_options,
+                cmd.keyring_provider,
             )
             .context("could not write dev lockfile for workspace")?;
         } else {
@@ -226,6 +225,7 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
                 cmd.output,
                 &sources,
                 &cmd.lock_options,
+                cmd.keyring_provider,
             )
             .context("could not write production lockfile for project")?;
             update_single_project_lockfile(
@@ -236,144 +236,87 @@ pub fn sync(mut cmd: SyncOptions) -> Result<(), Error> {
                 cmd.output,
                 &sources,
                 &cmd.lock_options,
+                cmd.keyring_provider,
             )
             .context("could not write dev lockfile for project")?;
         }
 
         // run pip install with the lockfile.
         if cmd.mode != SyncMode::LockOnly {
-            if output != CommandOutput::Quiet {
-                echo!("Installing dependencies");
-            }
+            echo!(if output, "Installing dependencies");
 
-            let tempdir = tempdir()?;
-            let mut sync_cmd = if Config::current().use_uv() {
-                let mut uv_sync_cmd = Command::new(self_venv.join(VENV_BIN).join("uv"));
-                uv_sync_cmd.arg("pip").arg("sync");
-                let root = pyproject.workspace_path();
-
-                uv_sync_cmd
-                    .env("PROJECT_ROOT", make_project_root_fragment(&root))
-                    .env("VIRTUAL_ENV", pyproject.venv_path().as_os_str())
-                    .current_dir(&root);
-                uv_sync_cmd
+            let target_lockfile = if cmd.dev && dev_lockfile.is_file() {
+                dev_lockfile
             } else {
-                let mut pip_sync_cmd = Command::new(get_pip_sync(&py_ver, output)?);
-                let root = pyproject.workspace_path();
-                let py_path = get_venv_python_bin(&venv);
-
-                // we need to run this after we have run the `get_pip_sync` command
-                // as this is what bootstraps or updates the pip tools installation.
-                // This is needed as on unix platforms we need to search the module path.
-                symlink_dir(
-                    get_pip_module(&get_pip_tools_venv_path(&py_ver))
-                        .context("could not locate pip")?,
-                    tempdir.path().join("pip"),
-                )
-                .context("failed linking pip module into for pip-sync")?;
-
-                pip_sync_cmd
-                    .env("PROJECT_ROOT", make_project_root_fragment(&root))
-                    .env("PYTHONPATH", tempdir.path())
-                    .current_dir(&root)
-                    .arg("--python-executable")
-                    .arg(&py_path)
-                    .arg("--pip-args")
-                    .arg("--no-deps");
-
-                if output != CommandOutput::Quiet {
-                    pip_sync_cmd.env("PYTHONWARNINGS", "ignore");
-                } else if output == CommandOutput::Verbose && env::var("PIP_VERBOSE").is_err() {
-                    pip_sync_cmd.env("PIP_VERBOSE", "2");
-                }
-                pip_sync_cmd
+                lockfile
             };
 
-            sources.add_as_pip_args(&mut sync_cmd);
-
-            if cmd.dev && dev_lockfile.is_file() {
-                sync_cmd.arg(&dev_lockfile);
-            } else {
-                sync_cmd.arg(&lockfile);
-            }
-
-            if output == CommandOutput::Verbose {
-                sync_cmd.arg("--verbose");
-            } else if output == CommandOutput::Quiet {
-                sync_cmd.arg("-q");
-            }
-            set_proxy_variables(&mut sync_cmd);
-            let status = sync_cmd.status().context("unable to run pip-sync")?;
-
-            if !status.success() {
-                bail!("Installation of dependencies failed");
-            }
-        }
+            let py_path = get_venv_python_bin(&venv);
+            let uv_options = UvSyncOptions {
+                keyring_provider: cmd.keyring_provider,
+            };
+            UvBuilder::new()
+                .with_output(output.quieter())
+                .with_workdir(&pyproject.workspace_path())
+                .with_sources(sources)
+                .ensure_exists()?
+                .venv(&venv, &py_path, &py_ver, None)?
+                .with_output(output)
+                .sync(&target_lockfile, uv_options)?;
+        };
     }
 
-    if output != CommandOutput::Quiet && cmd.mode != SyncMode::PythonOnly {
-        echo!("Done!");
+    if cmd.mode != SyncMode::PythonOnly {
+        echo!(if output, "Done!");
     }
 
     Ok(())
 }
 
+/// Performs an autosync.
+pub fn autosync(
+    pyproject: &PyProject,
+    output: CommandOutput,
+    pre: bool,
+    with_sources: bool,
+    generate_hashes: bool,
+    keyring_provider: KeyringProvider,
+) -> Result<(), Error> {
+    sync(SyncOptions {
+        output,
+        dev: true,
+        mode: SyncMode::Regular,
+        force: false,
+        no_lock: false,
+        lock_options: LockOptions {
+            pre,
+            with_sources,
+            generate_hashes,
+            ..Default::default()
+        },
+        pyproject: Some(pyproject.toml_path().to_path_buf()),
+        keyring_provider,
+    })
+}
+
 pub fn create_virtualenv(
     output: CommandOutput,
-    self_venv: &Path,
+    _self_venv: &Path,
     py_ver: &PythonVersion,
     venv: &Path,
     prompt: &str,
 ) -> Result<(), Error> {
     let py_bin = get_toolchain_python_bin(py_ver)?;
 
-    let mut venv_cmd = if Config::current().use_uv() {
-        // try to kill the empty venv if there is one as uv can't work otherwise.
-        fs::remove_dir(venv).ok();
-        let mut venv_cmd = Command::new(self_venv.join(VENV_BIN).join("uv"));
-        venv_cmd.arg("venv");
-        if output == CommandOutput::Verbose {
-            venv_cmd.arg("--verbose");
-        } else {
-            venv_cmd.arg("-q");
-        }
-        venv_cmd.arg("-p");
-        venv_cmd.arg(&py_bin);
-        venv_cmd
-    } else {
-        // create the venv folder first so we can manipulate some flags on it.
-        fs::create_dir_all(venv)
-            .with_context(|| format!("unable to create virtualenv folder '{}'", venv.display()))?;
-
-        update_venv_sync_marker(output, venv);
-        let mut venv_cmd = Command::new(self_venv.join(VENV_BIN).join("virtualenv"));
-        if output == CommandOutput::Verbose {
-            venv_cmd.arg("--verbose");
-        } else {
-            venv_cmd.arg("-q");
-            venv_cmd.env("PYTHONWARNINGS", "ignore");
-        }
-        venv_cmd.arg("-p");
-        venv_cmd.arg(&py_bin);
-        venv_cmd.arg("--no-seed");
-        venv_cmd.arg("--prompt");
-        venv_cmd.arg(prompt);
-        venv_cmd
-    };
-
-    venv_cmd.arg("--").arg(venv);
-
-    let status = venv_cmd
-        .status()
-        .context("unable to invoke virtualenv command")?;
-    if !status.success() {
-        bail!("failed to initialize virtualenv");
-    }
-
-    // uv can only do it now
-    if Config::current().use_uv() {
-        update_venv_sync_marker(output, venv);
-    }
+    // try to kill the empty venv if there is one as uv can't work otherwise.
+    fs::remove_dir(venv).ok();
+    let uv = UvBuilder::new()
+        .with_output(output.quieter())
+        .ensure_exists()?
+        .venv(venv, &py_bin, py_ver, Some(prompt))
+        .context("failed to initialize virtualenv")?;
+    uv.write_marker()?;
+    uv.sync_marker();
 
     // On UNIX systems Python is unable to find the tcl config that is placed
     // outside of the virtualenv.  It also sometimes is entirely unable to find
@@ -384,20 +327,6 @@ pub fn create_virtualenv(
     }
 
     Ok(())
-}
-
-/// Update the cloud synchronization marker for the given path
-/// based on the config flag.
-fn update_venv_sync_marker(output: CommandOutput, venv_path: &Path) {
-    if let Err(err) = mark_path_sync_ignore(venv_path, Config::current().venv_mark_sync_ignore()) {
-        if output != CommandOutput::Quiet && Config::current().venv_mark_sync_ignore() {
-            warn!(
-                "unable to mark virtualenv {} ignored for cloud sync: {}",
-                venv_path.display(),
-                err
-            );
-        }
-    }
 }
 
 #[cfg(unix)]
@@ -462,7 +391,7 @@ fn inject_tcl_config(venv: &Path, py_bin: &Path) -> Result<(), Error> {
 // There is only one folder in the venv/lib folder. But in practice, only pypy will use this method in linux
 #[cfg(unix)]
 fn get_site_packages(lib_dir: PathBuf) -> Result<Option<PathBuf>, Error> {
-    let entries = fs::read_dir(lib_dir).context("read venv/lib/ path is fail")?;
+    let entries = fs::read_dir(&lib_dir).path_context(&lib_dir, "read venv/lib/ path failed")?;
 
     for entry in entries {
         let entry = entry?;

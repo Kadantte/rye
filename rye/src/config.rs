@@ -6,12 +6,12 @@ use anyhow::{Context, Error};
 use once_cell::sync::Lazy;
 use pep440_rs::Operator;
 use regex::Regex;
-use toml_edit::Document;
+use toml_edit::DocumentMut;
 
 use crate::platform::{get_app_dir, get_latest_cpython_version};
 use crate::pyproject::{BuildSystem, SourceRef, SourceRefType};
-use crate::sources::PythonVersionRequest;
-use crate::utils::toml;
+use crate::sources::py::PythonVersionRequest;
+use crate::utils::{toml, IoPathContext};
 
 static CONFIG: Mutex<Option<Arc<Config>>> = Mutex::new(None);
 static AUTHOR_REGEX: Lazy<Regex> =
@@ -23,7 +23,7 @@ pub fn load() -> Result<(), Error> {
         Config::from_path(&cfg_path)?
     } else {
         Config {
-            doc: Document::new(),
+            doc: DocumentMut::new(),
             path: cfg_path,
         }
     };
@@ -33,7 +33,7 @@ pub fn load() -> Result<(), Error> {
 
 #[derive(Clone)]
 pub struct Config {
-    doc: Document,
+    doc: DocumentMut,
     path: PathBuf,
 }
 
@@ -49,13 +49,18 @@ impl Config {
     }
 
     /// Returns a clone of the internal doc.
-    pub fn doc_mut(&mut self) -> &mut Document {
+    pub fn doc_mut(&mut self) -> &mut DocumentMut {
         &mut self.doc
     }
 
     /// Saves changes back.
     pub fn save(&self) -> Result<(), Error> {
-        fs::write(&self.path, self.doc.to_string())?;
+        // try to make the parent folder if it does not exist.  ignore the error though.
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::write(&self.path, self.doc.to_string())
+            .path_context(&self.path, "failed to save config")?;
         Ok(())
     }
 
@@ -66,12 +71,11 @@ impl Config {
 
     /// Loads a config from a path.
     pub fn from_path(path: &Path) -> Result<Config, Error> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read config from '{}'", path.display()))?;
+        let contents = fs::read_to_string(path).path_context(path, "failed to read config")?;
         Ok(Config {
             doc: contents
-                .parse::<Document>()
-                .with_context(|| format!("failed to parse config from '{}'", path.display()))?,
+                .parse::<DocumentMut>()
+                .path_context(path, "failed to parse config")?,
             path: path.to_path_buf(),
         })
     }
@@ -228,7 +232,8 @@ impl Config {
         if let Some(sources) = self.doc.get("sources").map(|x| toml::iter_tables(x)) {
             for source in sources {
                 let source = source.context("invalid value for source in config.toml")?;
-                let source_ref = SourceRef::from_toml_table(source)?;
+                let source_ref = SourceRef::from_toml_table(source)
+                    .context("invalid source definition in config.toml")?;
                 if source_ref.name == "default" {
                     need_default = false;
                 }
@@ -247,11 +252,33 @@ impl Config {
         Ok(rv)
     }
 
-    /// Indicates if the experimental uv support should be used.
+    /// Enable autosync.
+    pub fn autosync(&self) -> bool {
+        self.doc
+            .get("behavior")
+            .and_then(|x| x.get("autosync"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true)
+    }
+
+    /// Indicates if uv should be used.
+    ///
+    /// This setting is deprecated, as pip-tools support was removed in Rye 0.40.
     pub fn use_uv(&self) -> bool {
         self.doc
             .get("behavior")
             .and_then(|x| x.get("use-uv"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true)
+    }
+
+    /// Fetches python installations with build info if possible.
+    ///
+    /// This used to be the default behavior in Rye prior to 0.31.
+    pub fn fetch_with_build_info(&self) -> bool {
+        self.doc
+            .get("behavior")
+            .and_then(|x| x.get("fetch-with-build-info"))
             .and_then(|x| x.as_bool())
             .unwrap_or(false)
     }
@@ -383,13 +410,5 @@ author = "John Doe <john@example.com>""#,
         assert!(sources
             .iter()
             .any(|src| src.name == "default" && src.url == "https://pypi.org/simple/"));
-    }
-
-    #[test]
-    fn test_use_uv() {
-        let (cfg_path, _temp_dir) = setup_config("[behavior]\nuse-uv = true");
-        let cfg = Config::from_path(&cfg_path).expect("Failed to load config");
-        // Assuming cfg!(windows) is false in this test environment
-        assert!(cfg.use_uv());
     }
 }

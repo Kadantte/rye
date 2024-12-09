@@ -28,7 +28,7 @@ different from a regular Python build.
 
 The following changes to a regular Python versions you should be aware of:
 
-* `libedit` instead of `readline`: unfortunately `readline` is GPL2 licensed
+* `libedit` instead of `readline`: unfortunately `readline` is GPLv3 licensed
   and this is a hazard for redistributions.  As such, the portable Python
   builds link against the more freely licensed `libedit` instead.
 
@@ -37,8 +37,8 @@ The following changes to a regular Python versions you should be aware of:
 
 Additionally due to how these builds are created, there are some other quirks
 you might run into related to terminal support or TKinter.  Some of these
-issues are collected in the [FAQ](../faq.md).  Additionally the Python
-Standalone Builds have a [Behavior Quirks](https://python-build-standalone.readthedocs.io/en/latest/quirks.html)
+issues are collected in the [FAQ](../faq.md).  Additionally, the Python
+Standalone Builds have a [Behavior Quirks](https://gregoryszorc.com/docs/python-build-standalone/main/quirks.html)
 page.
 
 ## Sources

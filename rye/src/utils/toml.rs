@@ -1,10 +1,10 @@
 use anyhow::{anyhow, bail, Error};
-use toml_edit::{Array, Document, Item, RawString, Table, TableLike};
+use toml_edit::{Array, DocumentMut, Item, RawString, Table, TableLike};
 
 /// Given a toml document, ensures that a given named table exists toplevel.
 ///
 /// The table is created as a non inline table which is the preferred style.
-pub fn ensure_table<'a>(doc: &'a mut Document, name: &str) -> &'a mut Item {
+pub fn ensure_table<'a>(doc: &'a mut DocumentMut, name: &str) -> &'a mut Item {
     if doc.as_item().get(name).is_none() {
         let mut tbl = Table::new();
         tbl.set_implicit(true);
@@ -48,7 +48,9 @@ pub fn reformat_array_multiline(deps: &mut Array) {
                 rv.push_str(comment);
             }
         }
-        rv.push('\n');
+        if !rv.is_empty() || !deps.is_empty() {
+            rv.push('\n');
+        }
         rv
     });
     deps.set_trailing_comma(true);

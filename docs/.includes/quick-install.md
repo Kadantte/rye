@@ -4,14 +4,14 @@
     operating system and CPU architecture and install it:
 
     ```bash
-    curl -sSf https://rye-up.com/get | bash
+    curl -sSf https://rye.astral.sh/get | bash
     ```
 
     Alternatively if you don't trust this approach, you can download the latest release
     binary.  On first run it will install itself.
 
-    * [rye-x86_64-linux.gz](https://github.com/mitsuhiko/rye/releases/latest/download/rye-x86_64-linux.gz) for 64bit Intel computers
-    * [rye-aarch64-linux.gz](https://github.com/mitsuhiko/rye/releases/latest/download/rye-aarch64-linux.gz) for 64bit ARM computers
+    * [rye-x86_64-linux.gz](https://github.com/astral-sh/rye/releases/latest/download/rye-x86_64-linux.gz) Intel/AMD (x86-64).
+    * [rye-aarch64-linux.gz](https://github.com/astral-sh/rye/releases/latest/download/rye-aarch64-linux.gz) for ARM64.
 
     ```bash
     gunzip rye-x86_64-linux.gz
@@ -21,18 +21,18 @@
 
 === "macOS"
 
-    To install run you can curl a command which will install the right binary for your
+    To install you can run a curl command which will install the right binary for your
     operating system and CPU architecture and install it:
 
     ```bash
-    curl -sSf https://rye-up.com/get | bash
+    curl -sSf https://rye.astral.sh/get | bash
     ```
 
     Alternatively if you don't trust this approach, you can download the latest release
     binary.  On first run it will install itself.
 
-    * [rye-aarch64-macos.gz](https://github.com/mitsuhiko/rye/releases/latest/download/rye-aarch64-macos.gz) for M1/M2 Macs
-    * [rye-x86_64-macos.gz](https://github.com/mitsuhiko/rye/releases/latest/download/rye-x86_64-macos.gz) for Intel Macs
+    * [rye-aarch64-macos.gz](https://github.com/astral-sh/rye/releases/latest/download/rye-aarch64-macos.gz) for Apple Silicon (M1/M2/M3) (ARM64).
+    * [rye-x86_64-macos.gz](https://github.com/astral-sh/rye/releases/latest/download/rye-x86_64-macos.gz) for Intel processors (x86-64).
 
     ```bash
     gunzip rye-aarch64-macos.gz
@@ -47,8 +47,8 @@
     to have "Developer Mode" activated when using Rye and before starting the
     installation.  [Learn more](../guide/faq.md).
 
-    * [rye-x86_64-windows.exe](https://github.com/mitsuhiko/rye/releases/latest/download/rye-x86_64-windows.exe) for 64bit Intel Windows
-    * [rye-x86-windows.exe](https://github.com/mitsuhiko/rye/releases/latest/download/rye-x86-windows.exe) for 32bit Intel Windows
+    * [rye-x86_64-windows.exe](https://github.com/astral-sh/rye/releases/latest/download/rye-x86_64-windows.exe) for 64-bit (x86-64).
+    * [rye-x86-windows.exe](https://github.com/astral-sh/rye/releases/latest/download/rye-x86-windows.exe) for 32-bit (x86).
 
     !!!Note
     
@@ -58,7 +58,7 @@
 
         Additionally sometimes a Trojan warning about "Bearfoos" is shown.  This is a false
         positive.  For more information see the discussion [Windows Bearfoos
-        virus associated with rye](https://github.com/mitsuhiko/rye/issues/468).
+        virus associated with rye](https://github.com/astral-sh/rye/issues/468).
 
 === "Compile Yourself"
 
@@ -68,5 +68,5 @@
     Afterwards you can install `Rye` via `cargo`:
 
     ```bash
-    cargo install --git https://github.com/mitsuhiko/rye rye
+    cargo install --git https://github.com/astral-sh/rye rye
     ```

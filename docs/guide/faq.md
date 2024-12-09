@@ -92,7 +92,7 @@ the default one higher priority in the `PATH:
 
 ```
 export PATH="/usr/bin:$PATH"
-curl -sSf https://rye-up.com/get | bash
+curl -sSf https://rye.astral.sh/get | bash
 ```
 
 ## References to Build-Time Paths
@@ -102,13 +102,13 @@ accommodating to portable builds there are various limitations still with this
 approach.  One of them is that built Python distributions capture some absolute
 paths and other build-time configuration.  These file paths are then often used
 by build tools to invoke C compilers.  For instance you might run into a compiler
-error like ``error: stdio.h: No such file or directory`` when building C
+error like `error: stdio.h: No such file or directory` when building C
 extensions.  There is no known solution to this problem today other than
 [registering a non portable toolchain](toolchains/index.md#registering-toolchains).
 
 This issue is inherited from `python-build-standalone` and more information can
 be found in the documentation: [References to Build-Time Paths](https://gregoryszorc.com/docs/python-build-standalone/main/quirks.html#references-to-build-time-paths).  There is also an open 
-Rye issue for it: [Issue #621](https://github.com/mitsuhiko/rye/issues/621).
+Rye issue for it: [Issue #621](https://github.com/astral-sh/rye/issues/621).
 
 ## TKinter Support
 
@@ -133,12 +133,12 @@ due to limitations in `libedit`.  In some cases though you might also discover t
 the backspace key does not work or arrow keys don't work as expected.  This can be
 because the _terminfo_ database cannot be found.
 
-For solutions to this issue, read the [behavior quirks guide](https://python-build-standalone.readthedocs.io/en/latest/quirks.html) in the
+For solutions to this issue, read the [behavior quirks guide](https://gregoryszorc.com/docs/python-build-standalone/main/quirks.html) in the
 Standalone Python Builds documentation for solutions.
 
 ## Can I use Rye Alongside Other Python Installations?
 
-Rye given it's experimental nature does not want to disrupt already existing Python
+Rye given its experimental nature does not want to disrupt already existing Python
 workflows.  As such using it alongside other Python installations is intentionally
 supported.  Even if the Rye shims come first on the `PATH`, Rye will automatically
 resolve to a different Python installation on the search path when invoked in a
@@ -199,4 +199,4 @@ while because the compiler spits out some bytes that have been associated with T
 written in Rust.
 
 It can be ignored.  For more information see the discussion [Windows Bearfoos
-virus associated with rye](https://github.com/mitsuhiko/rye/issues/468).
+virus associated with rye](https://github.com/astral-sh/rye/issues/468).

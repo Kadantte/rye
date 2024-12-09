@@ -9,7 +9,7 @@ use serde::{de, Deserialize, Serialize};
 
 mod downloads {
     use super::PythonVersion;
-    include!("downloads.inc");
+    include!("generated/python_downloads.inc");
 }
 
 const DEFAULT_NAME: &str = "cpython";
@@ -277,6 +277,9 @@ impl fmt::Display for PythonVersionRequest {
             write!(f, ".{}", minor)?;
             if let Some(ref patch) = self.patch {
                 write!(f, ".{}", patch)?;
+                if let Some(ref suffix) = self.suffix {
+                    write!(f, ".{}", suffix)?;
+                }
             }
         }
         Ok(())

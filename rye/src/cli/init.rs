@@ -23,10 +23,10 @@ use crate::platform::{
     get_python_version_request_from_pyenv_pin,
 };
 use crate::pyproject::BuildSystem;
-use crate::sources::PythonVersionRequest;
+use crate::sources::py::PythonVersionRequest;
 use crate::utils::{
     copy_dir, escape_string, format_requirement, get_venv_python_bin, is_inside_git_work_tree,
-    CommandOutput, CopyDirOptions,
+    CommandOutput, CopyDirOptions, IoPathContext,
 };
 
 /// Initialize a new or existing Python project with Rye.
@@ -35,6 +35,9 @@ pub struct Args {
     /// Where to place the project (defaults to current path)
     #[arg(default_value = ".")]
     path: PathBuf,
+    /// Initialization type
+    #[command(flatten)]
+    init_type: ArgTemplateChoice,
     /// Minimal Python version supported by this project.
     #[arg(long)]
     min_py: Option<String>,
@@ -47,7 +50,7 @@ pub struct Args {
     /// Do not create .python-version file (requires-python will be used)
     #[arg(long)]
     no_pin: bool,
-    /// Which build system should be used(defaults to hatchling)?
+    /// Which build system should be used (defaults to hatchling)?
     #[arg(long)]
     build_system: Option<BuildSystem>,
     /// Which license should be used (SPDX identifier)?
@@ -82,174 +85,51 @@ pub struct Args {
     quiet: bool,
 }
 
+#[derive(Parser, Debug)]
+#[group(multiple = false)]
+struct ArgTemplateChoice {
+    /// Generate a library project (default).
+    #[arg(long)]
+    lib: bool,
+
+    /// Generate an executable project.
+    #[arg(long)]
+    script: bool,
+}
+
+enum TemplateChoice {
+    Lib,
+    Script,
+}
+
 /// The pyproject.toml template
-///
-/// This uses a template just to simplify the flexibility of emitting it.
-const TOML_TEMPLATE: &str = r#"[project]
-name = {{ name }}
-version = {{ version }}
-description = {{ description }}
-{%- if author %}
-authors = [
-    { name = {{ author[0] }}, email = {{ author[1] }} }
-]
-{%- endif %}
-{%- if dependencies %}
-dependencies = [
-{%- for dependency in dependencies %}
-    {{ dependency }},
-{%- endfor %}
-]
-{%- else %}
-dependencies = []
-{%- endif %}
-{%- if with_readme %}
-readme = "README.md"
-{%- endif %}
-requires-python = {{ requires_python }}
-{%- if license %}
-license = { text = {{ license }} }
-{%- endif %}
-{%- if private %}
-classifiers = ["Private :: Do Not Upload"]
-{%- endif %}
+const TOML_TEMPLATE: &str = include_str!("../templates/pyproject.toml.j2");
 
-[project.scripts]
-hello = {{ name_safe ~ ":hello"}}
+/// The template for the README.md.
+const README_TEMPLATE: &str = include_str!("../templates/README.md.j2");
 
-{%- if not is_virtual %}
+/// The template for the LICENSE.txt.
+const LICENSE_TEMPLATE: &str = include_str!("../templates/LICENSE.txt.j2");
 
-[build-system]
-{%- if build_system == "hatchling" %}
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-{%- elif build_system == "setuptools" %}
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-{%- elif build_system == "flit" %}
-requires = ["flit_core>=3.4"]
-build-backend = "flit_core.buildapi"
-{%- elif build_system == "pdm" %}
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
-{%- elif build_system == "maturin" %}
-requires = ["maturin>=1.2,<2.0"]
-build-backend = "maturin"
-{%- endif %}
-{%- endif %}
+/// Template for the __init__.py when --lib is specified.
+const INIT_PY_LIB_TEMPLATE: &str = include_str!("../templates/lib/default/__init__.py.j2");
 
-[tool.rye]
-managed = true
-{%- if is_virtual %}
-virtual = true
-{%- endif %}
-{%- if dev_dependencies %}
-dev-dependencies = [
-{%- for dependency in dev_dependencies %}
-    {{ dependency }},
-{%- endfor %}
-]
-{%- else %}
-dev-dependencies = []
-{%- endif %}
+/// Template for the __init__.py when --script is specified.
+const INIT_PY_BIN_TEMPLATE: &str = include_str!("../templates/script/default/__init__.py.j2");
 
-{%- if not is_virtual %}
-{%- if build_system == "hatchling" %}
+const INIT_PY_BIN_MAIN_TEMPLATE: &str = include_str!("../templates/script/default/__main__.py.j2");
 
-[tool.hatch.metadata]
-allow-direct-references = true
+/// Template for the lib.rs when using the maturin build system.
+const LIB_RS_TEMPLATE: &str = include_str!("../templates/lib/maturin/lib.rs.j2");
 
-[tool.hatch.build.targets.wheel]
-packages = [{{ "src/" ~ name_safe }}]
-{%- elif build_system == "maturin" %}
+/// Template for the __init__.py when using the maturin build system.
+const RUST_INIT_PY_TEMPLATE: &str = include_str!("../templates/lib/maturin/__init__.py.j2");
 
-[tool.maturin]
-python-source = "python"
-module-name = {{ name_safe ~ "._lowlevel" }}
-features = ["pyo3/extension-module"]
-{%- endif %}
-{%- endif %}
+/// Template for the Cargo.toml.
+const CARGO_TOML_TEMPLATE: &str = include_str!("../templates/lib/maturin/Cargo.toml.j2");
 
-"#;
-
-/// The template for the readme file.
-const README_TEMPLATE: &str = r#"# {{ name }}
-
-Describe your project here.
-
-{%- if license %}
-* License: {{ license }}
-{%- endif %}
-
-"#;
-
-const LICENSE_TEMPLATE: &str = r#"
-{{ license_text }}
-"#;
-
-/// Template for the __init__.py
-const INIT_PY_TEMPLATE: &str = r#"def hello():
-    return "Hello from {{ name }}!"
-
-"#;
-
-/// Template for the lib.rs
-const LIB_RS_TEMPLATE: &str = r#"use pyo3::prelude::*;
-
-/// Prints a message.
-#[pyfunction]
-fn hello() -> PyResult<String> {
-    Ok("Hello from {{ name }}!".into())
-}
-
-/// A Python module implemented in Rust.
-#[pymodule]
-fn _lowlevel(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(hello, m)?)?;
-    Ok(())
-}
-"#;
-
-/// Template for the __init__.py
-const RUST_INIT_PY_TEMPLATE: &str = r#"from {{ name_safe }}._lowlevel import hello
-__all__ = ["hello"]
-
-"#;
-
-/// Template for the Cargo.toml
-const CARGO_TOML_TEMPLATE: &str = r#"[package]
-name = {{ name }}
-version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[lib]
-name = {{ name_safe }}
-crate-type = ["cdylib"]
-
-[dependencies]
-pyo3 = "0.19.0"
-
-"#;
-
-/// Template for fresh gitignore files
-const GITIGNORE_TEMPLATE: &str = r#"# python generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-{%- if is_rust %}
-# Rust
-target/
-{%- endif %}
-
-# venv
-.venv
-
-"#;
+/// Template for fresh gitignore files.
+const GITIGNORE_TEMPLATE: &str = include_str!("../templates/gitignore.j2");
 
 /// Script used for setup.py setup proxy.
 const SETUP_PY_PROXY_SCRIPT: &str = r#"
@@ -272,7 +152,8 @@ if __name__ == "setuptools":
 
 pub fn execute(cmd: Args) -> Result<(), Error> {
     let cfg = Config::current();
-    let env = Environment::new();
+    let mut env = Environment::new();
+    env.set_keep_trailing_newline(true);
     let dir = env::current_dir()?.join(cmd.path);
     let toml = dir.join("pyproject.toml");
     let readme = dir.join("README.md");
@@ -338,15 +219,16 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
                 license_text,
             },
         )?;
-        fs::write(&license_file, rv)?;
+        fs::write(&license_file, rv).path_context(&license_file, "create license file")?;
     }
+
+    let output = CommandOutput::from_quiet_and_verbose(cmd.quiet, cmd.verbose);
 
     // initialize with no metadata
     let mut metadata = Metadata::new();
 
     // by default rye attempts to import metadata first.
     if !cmd.no_import {
-        let output = CommandOutput::from_quiet_and_verbose(cmd.quiet, cmd.verbose);
         let options = ImportOptions {
             output,
             requirements: cmd.requirements,
@@ -371,7 +253,7 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
     }
     if metadata.author.is_none() {
         is_metadata_author_none = true;
-        metadata.author = author.clone();
+        metadata.author.clone_from(&author);
     }
     if metadata.requires_python.is_none() {
         metadata.requires_python = Some(requires_python);
@@ -389,8 +271,8 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
         // the full version request.  This has the disadvantage that we might end up
         // pinning to an architecture specific version.
         let to_write = get_pinnable_version(&py, false).unwrap_or_else(|| py.to_string());
-        fs::write(python_version_file, format!("{}\n", to_write))
-            .context("could not write .python-version file")?;
+        fs::write(&python_version_file, format!("{}\n", to_write))
+            .path_context(&python_version_file, "could not write .python-version file")?;
     }
 
     // create a readme if one is missing
@@ -398,7 +280,7 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
         true
     } else if !cmd.no_readme {
         let rv = env.render_named_str(
-            "README.txt",
+            "README.md",
             README_TEMPLATE,
             context! {
                 name => metadata.name,
@@ -418,6 +300,20 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
 
     let private = cmd.private;
 
+    // What template are we using?
+    let template = {
+        if cmd.init_type.script {
+            TemplateChoice::Script
+        } else {
+            // default value
+            TemplateChoice::Lib
+        }
+    };
+
+    if cmd.init_type.script && build_system == BuildSystem::Maturin {
+        bail!("--script is not supported when the build-system is maturin");
+    }
+
     // crate a python module safe name.  This is the name on the metadata with
     // underscores instead of dashes to form a valid python package name and in
     // case it starts with a digit, an underscore is prepended.
@@ -430,8 +326,6 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
         name_safe.insert(0, '_');
     }
 
-    let is_rust = build_system == BuildSystem::Maturin;
-
     // if git init is successful prepare the local git repository
     if !is_inside_git_work_tree(&dir)
         && Command::new("git")
@@ -442,26 +336,26 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
+        && is_metadata_author_none
     {
-        let gitignore = dir.join(".gitignore");
+        let new_author = get_default_author_with_fallback(&dir);
+        if author != new_author {
+            metadata.author = new_author;
+        }
+    }
 
-        // create a .gitignore if one is missing
-        if !gitignore.is_file() {
-            let rv = env.render_named_str(
-                "gitignore.txt",
-                GITIGNORE_TEMPLATE,
-                context! {
-                    is_rust
-                },
-            )?;
-            fs::write(&gitignore, rv).context("failed to write .gitignore")?;
-        }
-        if is_metadata_author_none {
-            let new_author = get_default_author_with_fallback(&dir);
-            if author != new_author {
-                metadata.author = new_author;
-            }
-        }
+    let gitignore = dir.join(".gitignore");
+
+    // create a .gitignore if one is missing
+    if !gitignore.is_file() {
+        let rv = env.render_named_str(
+            "gitignore.txt",
+            GITIGNORE_TEMPLATE,
+            context! {
+                is_rust => matches!(build_system, BuildSystem::Maturin)
+            },
+        )?;
+        fs::write(&gitignore, rv).path_context(&gitignore, "failed to write .gitignore")?;
     }
 
     let rv = env.render_named_str(
@@ -477,6 +371,7 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
             license => metadata.license,
             dependencies => metadata.dependencies,
             dev_dependencies => metadata.dev_dependencies,
+            is_script => matches!(template, TemplateChoice::Script),
             is_virtual,
             with_readme,
             build_system,
@@ -489,48 +384,75 @@ pub fn execute(cmd: Args) -> Result<(), Error> {
         let src_dir = dir.join("src");
         if !imported_something && !src_dir.is_dir() {
             let name = metadata.name.expect("project name");
-            if is_rust {
-                fs::create_dir_all(&src_dir).ok();
-                let project_dir = dir.join("python").join(&name_safe);
-                fs::create_dir_all(&project_dir).ok();
-                let rv = env.render_named_str("lib.rs", LIB_RS_TEMPLATE, context! { name })?;
-                fs::write(src_dir.join("lib.rs"), rv).context("failed to write lib.rs")?;
-                let rv = env.render_named_str(
-                    "Cargo.json",
-                    CARGO_TOML_TEMPLATE,
-                    context! {
-                        name,
-                        name_safe,
-                    },
-                )?;
-                fs::write(dir.join("Cargo.toml"), rv).context("failed to write Cargo.toml")?;
-                let rv = env.render_named_str(
-                    "__init__.py",
-                    RUST_INIT_PY_TEMPLATE,
-                    context! {
-                        name_safe
-                    },
-                )?;
-                fs::write(project_dir.join("__init__.py"), rv)
-                    .context("failed to write __init__.py")?;
-            } else {
-                let project_dir = src_dir.join(&name_safe);
-                fs::create_dir_all(&project_dir).ok();
-                let rv =
-                    env.render_named_str("__init__.py", INIT_PY_TEMPLATE, context! { name })?;
-                fs::write(project_dir.join("__init__.py"), rv)
-                    .context("failed to write __init__.py")?;
+            match (template, build_system) {
+                (TemplateChoice::Lib, BuildSystem::Maturin) => {
+                    fs::create_dir_all(&src_dir).ok();
+                    let project_dir = dir.join("python").join(&name_safe);
+                    fs::create_dir_all(&project_dir).ok();
+                    let rv = env.render_named_str("lib.rs", LIB_RS_TEMPLATE, context! { name })?;
+                    fs::write(src_dir.join("lib.rs"), rv).context("failed to write lib.rs")?;
+                    let rv = env.render_named_str(
+                        "Cargo.json",
+                        CARGO_TOML_TEMPLATE,
+                        context! {
+                            name,
+                            name_safe,
+                        },
+                    )?;
+                    fs::write(dir.join("Cargo.toml"), rv).context("failed to write Cargo.toml")?;
+                    let rv = env.render_named_str(
+                        "__init__.py",
+                        RUST_INIT_PY_TEMPLATE,
+                        context! {
+                            name_safe
+                        },
+                    )?;
+                    fs::write(project_dir.join("__init__.py"), rv)
+                        .context("failed to write __init__.py")?;
+                }
+                (TemplateChoice::Lib, _) => {
+                    let project_dir = src_dir.join(&name_safe);
+                    fs::create_dir_all(&project_dir).ok();
+                    let rv = env.render_named_str(
+                        "__init__.py",
+                        INIT_PY_LIB_TEMPLATE,
+                        context! { name },
+                    )?;
+                    fs::write(project_dir.join("__init__.py"), rv)
+                        .context("failed to write __init__.py")?;
+                }
+                (TemplateChoice::Script, _) => {
+                    let project_dir = src_dir.join(&name_safe);
+                    fs::create_dir_all(&project_dir).ok();
+
+                    let rv1 = env.render_named_str(
+                        "__init__.py",
+                        INIT_PY_BIN_TEMPLATE,
+                        context! { name },
+                    )?;
+                    fs::write(project_dir.join("__init__.py"), rv1)
+                        .context("failed to write __init__.py")?;
+
+                    let rv2 = env.render_named_str(
+                        "__main__.py",
+                        INIT_PY_BIN_MAIN_TEMPLATE,
+                        context! { name_safe },
+                    )?;
+                    fs::write(project_dir.join("__main__.py"), rv2)
+                        .context("failed to write __main__.py")?;
+                }
             }
         }
     }
 
     echo!(
+        if output,
         "{} Initialized {}project in {}",
         style("success:").green(),
         if is_virtual { "virtual " } else { "" },
         dir.display()
     );
-    echo!("  Run `rye sync` to get started");
+    echo!(if output, "  Run `rye sync` to get started");
 
     Ok(())
 }
@@ -766,7 +688,7 @@ fn get_setup_py_json<T: AsRef<Path>>(path: T, python: T) -> Result<Value, Error>
 ///  * `<archive_url>`. TBD
 ///  * Options without a requirement, such as `--find-links` or `--index-url`
 ///
-/// See https://github.com/mitsuhiko/rye/issues/191
+/// See https://github.com/astral-sh/rye/issues/191
 fn import_requirements_file(
     requirements: &mut BTreeMap<String, String>,
     path: impl AsRef<Path>,

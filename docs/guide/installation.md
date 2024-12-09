@@ -14,7 +14,7 @@ a folder in your home directory and manage itself there.
 Rye will automatically download suitable Python toolchains as needed.  For more
 information about this [read about toolchains](toolchains/index.md).  To install
 a specific version download a binary directly
-[from GitHub](https://github.com/mitsuhiko/rye/releases).
+[from GitHub](https://github.com/astral-sh/rye/releases).
 
 ## Customized Installation
 
@@ -66,7 +66,7 @@ opt-out, or you run a custom shell you will need to do this manually.
     ```
 
     In some setups `.profile` is not sourced, in which case you can add it to your
-    `.bashrc` instead:
+    `.bashrc`:
 
     ```bash
     echo 'source "$HOME/.rye/env"' >> ~/.bashrc
@@ -77,19 +77,19 @@ opt-out, or you run a custom shell you will need to do this manually.
     Rye ships an `env` file which should be sourced to update `PATH` automatically.
 
     ```bash
-    echo 'source "$HOME/.rye/env"' >> ~/.profile
+    echo 'source "$HOME/.rye/env"' >> ~/.zprofile
     ```
 
-    In some setups `.profile` is not sourced, in which case you can add it to your
-    `.zprofile` instead:
+    In some setups `.zprofile` is not sourced, in which case you can add it to your
+    `.zshrc`:
 
     ```bash
-    echo 'source "$HOME/.rye/env"' >> ~/.zprofile
+    echo 'source "$HOME/.rye/env"' >> ~/.zshrc
     ```
 
 === "Fish"
 
-    Since fish does not support `env` files, you instead need to add
+    Since fish does not support `env` files, you need to add
     the shims directly.  This can be accomplished by running this
     command once:
 
@@ -99,7 +99,7 @@ opt-out, or you run a custom shell you will need to do this manually.
 
 === "Nushell"
 
-    Since nushell does not support `env` files, you instead need to add
+    Since nushell does not support `env` files, you need to add
     the shims directly.  This can be accomplished by adding this to your
     `env.nu` file:
 
@@ -137,7 +137,7 @@ to learn more.
 
 ## Shell Completion
 
-Rye supports generating completion scripts for Bash, Zsh, Fish or Powershell. Here are some common locations for each shell:
+Rye supports generating completion scripts for Bash, Zsh, Fish, Powershell and Nushell. Here are some common locations for each shell:
 
 === "Bash"
 
@@ -181,6 +181,12 @@ Rye supports generating completion scripts for Bash, Zsh, Fish or Powershell. He
     # Generate script
     Set-ExecutionPolicy Unrestricted -Scope CurrentUser
     rye self completion -s powershell | Out-File -Encoding utf8 $PROFILE\..\Completions\rye_completion.ps1
+    ```
+
+=== "NuShell"
+
+    ```nushell
+    rye self completion -s nushell | save --append $nu.env-path
     ```
 
 ## Updating Rye

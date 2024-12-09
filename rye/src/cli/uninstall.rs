@@ -7,7 +7,7 @@ use crate::utils::CommandOutput;
 /// Uninstalls a global tool.
 #[derive(Parser, Debug)]
 pub struct Args {
-    /// The package to uninstall
+    /// The package to uninstall.
     name: String,
     /// Enables verbose diagnostics.
     #[arg(short, long)]

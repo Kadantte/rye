@@ -12,9 +12,11 @@ use console::style;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::platform::{get_canonical_py_path, list_known_toolchains};
-use crate::sources::{iter_downloadable, PythonVersion};
-use crate::utils::symlink_file;
+use crate::installer::list_installed_tools;
+use crate::platform::{get_app_dir, get_canonical_py_path, list_known_toolchains};
+use crate::pyproject::read_venv_marker;
+use crate::sources::py::{iter_downloadable, PythonVersion};
+use crate::utils::{symlink_file, IoPathContext};
 
 const INSPECT_SCRIPT: &str = r#"
 import json
@@ -60,6 +62,9 @@ pub struct RegisterCommand {
 pub struct RemoveCommand {
     /// Name and version of the toolchain.
     version: String,
+    /// Force removal even if the toolchain is in use.
+    #[arg(short, long)]
+    force: bool,
 }
 
 /// List all registered toolchains
@@ -103,14 +108,59 @@ fn register(cmd: RegisterCommand) -> Result<(), Error> {
     Ok(())
 }
 
+/// Checks if a toolchain is still in use.
+fn check_in_use(ver: &PythonVersion) -> Result<(), Error> {
+    // Check if used by rye itself.
+    let app_dir = get_app_dir();
+    let venv_marker = read_venv_marker(app_dir.join("self").as_path());
+    if let Some(ref venv_marker) = venv_marker {
+        if &venv_marker.python == ver {
+            bail!("toolchain {} is still in use by rye itself", ver);
+        }
+    }
+
+    // Check if used by any tool.
+    let installed_tools = list_installed_tools()?;
+
+    let toolchain_refs = installed_tools
+        .iter()
+        .filter_map(|(tool, info)| {
+            if let Some(ref venv_marker) = info.venv_marker {
+                match &venv_marker.python == ver {
+                    true => Some(tool.clone()),
+                    false => None,
+                }
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !toolchain_refs.is_empty() {
+        bail!(
+            "toolchain {} is still in use by tool{} {}",
+            ver,
+            if toolchain_refs.len() > 1 { "s:" } else { "" },
+            toolchain_refs.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 pub fn remove(cmd: RemoveCommand) -> Result<(), Error> {
     let ver: PythonVersion = cmd.version.parse()?;
     let path = get_canonical_py_path(&ver)?;
+
+    if !cmd.force && path.exists() {
+        check_in_use(&ver)?;
+    }
+
     if path.is_file() {
-        fs::remove_file(&path)?;
+        fs::remove_file(&path).path_context(&path, "failed to remove toolchain link")?;
         echo!("Removed toolchain link {}", &ver);
     } else if path.is_dir() {
-        fs::remove_dir_all(&path)?;
+        fs::remove_dir_all(&path).path_context(&path, "failed to remove toolchain")?;
         echo!("Removed installed toolchain {}", &ver);
     } else {
         echo!("Toolchain is not installed");
@@ -249,7 +299,7 @@ where
                     .to_str()
                     .ok_or_else(|| anyhow::anyhow!("non unicode path to interpreter"))?,
             )
-            .context("could not register interpreter")?;
+            .path_context(&target, "could not register interpreter")?;
         }
     }
 
